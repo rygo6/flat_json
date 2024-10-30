@@ -94,7 +94,7 @@ class Json
     Json(unsigned long);
     ~Json();
 
-    Json(const nullptr_t = nullptr) : type_(Null)
+    Json(const std::nullptr_t = nullptr) : type_(Null)
     {
     }
 

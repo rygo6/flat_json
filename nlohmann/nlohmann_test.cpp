@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "json.h"
+#include "nlohmann.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -370,13 +370,21 @@ main(int argc, char* argv[])
     for (int i = 0; i < sizeof(kParsingTests) / sizeof(*kParsingTests); ++i) {
         std::string path = "JSONTestSuite/test_parsing/";
         path += kParsingTests[i];
-        std::pair<Json::Status, Json> result = Json::parse(slurp(path.c_str()));
         const char* color = "";
         const char* reason = "";
+        std::string extra;
+        bool parse_succeeded;
+        try {
+            (void)nlohmann::ordered_json::parse(slurp(path.c_str()));
+            parse_succeeded = true;
+        } catch (const nlohmann::json::exception& e) {
+            extra = e.what();
+            parse_succeeded = false;
+        }
         switch (kParsingTests[i][0]) {
             case 'y':
                 // content must be accepted by parsers
-                if (result.first == Json::success) {
+                if (parse_succeeded) {
                     color = HI_GOOD;
                     reason = "PASSED";
                 } else {
@@ -387,7 +395,7 @@ main(int argc, char* argv[])
                 break;
             case 'n':
                 // content must be rejected by parsers
-                if (result.first != Json::success) {
+                if (!parse_succeeded) {
                     color = HI_GOOD;
                     reason = "REJECTED";
                 } else {
@@ -399,7 +407,7 @@ main(int argc, char* argv[])
             case 'i':
                 // parsers are free to accept or reject content
                 color = HI_OK;
-                if (result.first == Json::success) {
+                if (parse_succeeded) {
                     reason = "IMPLEMENTATION_PASS";
                 } else {
                     reason = "IMPLEMENTATION_FAIL";
@@ -409,8 +417,8 @@ main(int argc, char* argv[])
                 abort();
         }
         printf("%-70s %s%s%s", kParsingTests[i], color, reason, HI_RESET);
-        if (result.first != Json::success)
-            printf(" (%s)", Json::StatusToString(result.first));
+        if (!extra.empty())
+            printf(" (%s)", extra.c_str());
         printf("\n");
     }
     return failures;
