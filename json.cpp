@@ -121,7 +121,7 @@ static const char kEscapeLiteral[128] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, // 0x70
 };
 
-alignas(int8_t) static const int8_t kHexToInt[256] = {
+alignas(signed char) static const signed char kHexToInt[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, // 0x00
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, // 0x10
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, // 0x20
@@ -204,7 +204,7 @@ StringToDouble(const char* s, size_t n, int* out_processed)
 }
 
 static char*
-Uint64ToString(char p[21], uint_least64_t x)
+UlongToString(char* p, unsigned long long x)
 {
     char t;
     size_t i, a, b;
@@ -225,16 +225,16 @@ Uint64ToString(char p[21], uint_least64_t x)
 }
 
 static char*
-Int64ToString(char p[21], int64_t x)
+LongToString(char* p, long long x)
 {
     if (x < 0)
-        *p++ = '-', x = -(uint_least64_t)x;
-    return Uint64ToString(p, x);
+        *p++ = '-', x = -(unsigned long long)x;
+    return UlongToString(p, x);
 }
 
-Json::Json(unsigned long value)
+Json::Json(unsigned long long value)
 {
-    if (value <= LONG_MAX) {
+    if (value <= LLONG_MAX) {
         type_ = Long;
         long_value = value;
     } else {
@@ -428,7 +428,7 @@ Json::getNumber() const
     }
 }
 
-long
+long long
 Json::getLong() const
 {
     if (!isLong())
@@ -508,19 +508,19 @@ Json::setFloat(float value)
 }
 
 void
-Json::setLong(long value)
-{
-    clear();
-    type_ = Long;
-    long_value = value;
-}
-
-void
 Json::setDouble(double value)
 {
     clear();
     type_ = Double;
     double_value = value;
+}
+
+void
+Json::setLong(long long value)
+{
+    clear();
+    type_ = Long;
+    long_value = value;
 }
 
 void
@@ -540,19 +540,11 @@ Json::setString(std::string&& value)
 }
 
 void
-Json::setString(const std::string& value)
+Json::setString(const JSON_STRING_VIEW_& value)
 {
     clear();
     type_ = String;
     new (&string_value) std::string(value);
-}
-
-void
-Json::setString(const std::string_view& value)
-{
-    clear();
-    type_ = String;
-    new (&string_value) std::string_view(value);
 }
 
 void
@@ -624,8 +616,8 @@ Json::marshal(std::string& b, bool pretty, int indent) const
             b += bool_value ? "true" : "false";
             break;
         case Long: {
-            char buf[21];
-            b.append(buf, Int64ToString(buf, long_value) - buf);
+            char buf[64];
+            b.append(buf, LongToString(buf, long_value) - buf);
             break;
         }
         case Float: {
@@ -698,7 +690,7 @@ Json::marshal(std::string& b, bool pretty, int indent) const
 }
 
 void
-Json::stringify(std::string& b, const std::string_view& s)
+Json::stringify(std::string& b, const JSON_STRING_VIEW_& s)
 {
     b += '"';
     serialize(b, s);
@@ -706,11 +698,11 @@ Json::stringify(std::string& b, const std::string_view& s)
 }
 
 void
-Json::serialize(std::string& sb, const std::string_view& s)
+Json::serialize(std::string& sb, const JSON_STRING_VIEW_& s)
 {
     size_t i, j, m;
     wint_t x, a, b;
-    uint_least64_t w;
+    unsigned long long w;
     for (i = 0; i < s.size();) {
         x = s[i++] & 255;
         if (x >= 0300) {
@@ -777,8 +769,8 @@ Json::serialize(std::string& sb, const std::string_view& s)
 Json::Status
 Json::parse(Json& json, const char*& p, const char* e, int context, int depth)
 {
-    long x;
     char w[4];
+    long long x;
     const char* a;
     int A, B, C, D, c, d, i, u;
     if (!depth)
@@ -1219,7 +1211,7 @@ Json::parse(Json& json, const char*& p, const char* e, int context, int depth)
 }
 
 std::pair<Json::Status, Json>
-Json::parse(const std::string_view& s)
+Json::parse(const JSON_STRING_VIEW_& s)
 {
     Json::Status s2;
     std::pair<Json::Status, Json> res;

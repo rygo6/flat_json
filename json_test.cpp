@@ -24,7 +24,7 @@
 #define ARRAYLEN(A) \
     ((sizeof(A) / sizeof(*(A))) / ((unsigned)!(sizeof(A) % sizeof(*(A)))))
 
-using namespace std::string_literals;
+#define STRING(sl) std::string(sl, sizeof(sl) - 1)
 
 static const char kHuge[] = R"([
     "JSON Test Pattern pass1",
@@ -319,7 +319,7 @@ static const struct
     { Json::illegal_character, " [a\xe5] " },
     { Json::unexpected_comma, " {\"x\", null} " },
     { Json::illegal_character, " [\"x\", truth] " },
-    { Json::illegal_character, "\x00"s },
+    { Json::illegal_character, STRING("\x00") },
     { Json::trailing_content, "\n[\"x\"]]" },
     { Json::unexpected_octal, " [012] " },
     { Json::unexpected_octal, " [-012] " },
@@ -344,8 +344,8 @@ static const struct
     { Json::bad_double, " [0.e1] " },
     { Json::bad_double, " [-2.] " },
     { Json::illegal_character, " \xef\xbb\xbf{} " },
-    { Json::illegal_character, " [\x00\"\x00\xe9\x00\"\x00]\x00 "s },
-    { Json::illegal_character, " \x00[\x00\"\x00\xe9\x00\"\x00] "s },
+    { Json::illegal_character, STRING(" [\x00\"\x00\xe9\x00\"\x00]\x00 ") },
+    { Json::illegal_character, STRING(" \x00[\x00\"\x00\xe9\x00\"\x00] ") },
     { Json::malformed_utf8, " [\"\xe0\xff\"] " },
     { Json::illegal_utf8_character, " [\"\xfc\x80\x80\x80\x80\x80\"] " },
     { Json::illegal_utf8_character, " [\"\xfc\x83\xbf\xbf\xbf\xbf\"] " },
@@ -372,16 +372,16 @@ round_trip_test()
     for (size_t i = 0; i < ARRAYLEN(kRoundTrip); ++i) {
         std::pair<Json::Status, Json> res = Json::parse(kRoundTrip[i].before);
         if (res.first != Json::success) {
-            printf("error: Json::parse returned Json::%s but wanted Json::%s: "
-                   "%s\n",
-                   Json::StatusToString(res.first),
-                   Json::StatusToString(Json::success),
-                   kRoundTrip[i].before.c_str());
+            printf(
+              "error: Json::parse returned Json::%s but wanted Json::%s: %s\n",
+              Json::StatusToString(res.first),
+              Json::StatusToString(Json::success),
+              kRoundTrip[i].before.c_str());
             exit(10);
         }
         if (res.second.toString() != kRoundTrip[i].after) {
-            printf("error: Json::parse(%s).toString() was %s but should "
-                   "have been %s\n",
+            printf("error: Json::parse(%s).toString() was %s but should have "
+                   "been %s\n",
                    kRoundTrip[i].before.c_str(),
                    res.second.toString().c_str(),
                    kRoundTrip[i].after.c_str());
@@ -396,11 +396,11 @@ json_test_suite()
     for (size_t i = 0; i < ARRAYLEN(kJsonTestSuite); ++i) {
         std::pair<Json::Status, Json> res = Json::parse(kJsonTestSuite[i].json);
         if (res.first != kJsonTestSuite[i].error) {
-            printf("error: Json::parse returned Json::%s but wanted Json::%s: "
-                   "%s\n",
-                   Json::StatusToString(res.first),
-                   Json::StatusToString(kJsonTestSuite[i].error),
-                   kJsonTestSuite[i].json.c_str());
+            printf(
+              "error: Json::parse returned Json::%s but wanted Json::%s: %s\n",
+              Json::StatusToString(res.first),
+              Json::StatusToString(kJsonTestSuite[i].error),
+              kJsonTestSuite[i].json.c_str());
             exit(12);
         }
     }

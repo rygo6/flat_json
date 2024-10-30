@@ -364,10 +364,11 @@ slurp(const char* path)
 }
 
 int
-main(int argc, char* argv[])
+main()
 {
     int failures = 0;
-    for (int i = 0; i < sizeof(kParsingTests) / sizeof(*kParsingTests); ++i) {
+    int n = sizeof(kParsingTests) / sizeof(*kParsingTests);
+    for (int i = 0; i < n; ++i) {
         std::string path = "JSONTestSuite/test_parsing/";
         path += kParsingTests[i];
         std::pair<Json::Status, Json> result = Json::parse(slurp(path.c_str()));

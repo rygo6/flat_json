@@ -2,7 +2,8 @@ check:	json_test.ok			\
 	jsontestsuite_test.ok
 
 clean:
-	rm -f *.o *.a *.ok *_test
+	rm -f *.o *.a *.ok *_test *.elf *.dbg
+	rm -rf .aarch64
 
 json.o: json.cpp json.h
 

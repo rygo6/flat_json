@@ -1,4 +1,7 @@
 /*.o
 /*.a
 /*.ok
+/*.elf
+/*.dbg
 /*_test
+/.aarch64

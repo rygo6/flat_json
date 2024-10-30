@@ -20,6 +20,12 @@
 #include <string>
 #include <vector>
 
+#if __cplusplus >= 201703L
+#define JSON_STRING_VIEW_ std::string_view
+#else
+#define JSON_STRING_VIEW_ std::string
+#endif
+
 class Json
 {
   public:
@@ -77,9 +83,9 @@ class Json
     union
     {
         bool bool_value;
-        long long_value;
         float float_value;
         double double_value;
+        long long long_value;
         std::string string_value;
         std::vector<Json> array_value;
         std::map<std::string, Json> object_value;
@@ -87,11 +93,11 @@ class Json
 
   public:
     static const char* StatusToString(Status);
-    static std::pair<Status, Json> parse(const std::string_view&);
+    static std::pair<Status, Json> parse(const JSON_STRING_VIEW_&);
 
     Json(const Json&);
     Json(Json&&) noexcept;
-    Json(unsigned long);
+    Json(unsigned long long);
     ~Json();
 
     Json(const std::nullptr_t = nullptr) : type_(Null)
@@ -102,23 +108,23 @@ class Json
     {
     }
 
-    Json(float value) : type_(Float), float_value(value)
-    {
-    }
-
-    Json(double value) : type_(Double), double_value(value)
-    {
-    }
-
     Json(int value) : type_(Long), long_value(value)
     {
     }
 
-    Json(long value) : type_(Long), long_value(value)
+    Json(float value) : type_(Float), float_value(value)
     {
     }
 
     Json(unsigned value) : type_(Long), long_value(value)
+    {
+    }
+
+    Json(long long value) : type_(Long), long_value(value)
+    {
+    }
+
+    Json(double value) : type_(Double), double_value(value)
     {
     }
 
@@ -130,11 +136,7 @@ class Json
     {
     }
 
-    Json(const std::string& value) : type_(String), string_value(value)
-    {
-    }
-
-    Json(const std::string_view& value) : type_(String), string_value(value)
+    Json(const JSON_STRING_VIEW_& value) : type_(String), string_value(value)
     {
     }
 
@@ -189,23 +191,22 @@ class Json
     }
 
     bool getBool() const;
-    long getLong() const;
     float getFloat() const;
     double getDouble() const;
     double getNumber() const;
+    long long getLong() const;
     std::string& getString();
     std::vector<Json>& getArray();
     std::map<std::string, Json>& getObject();
 
     void setNull();
     void setBool(bool);
-    void setLong(long);
     void setFloat(float);
     void setDouble(double);
+    void setLong(long long);
     void setString(const char*);
     void setString(std::string&&);
-    void setString(const std::string&);
-    void setString(const std::string_view&);
+    void setString(const JSON_STRING_VIEW_&);
     void setArray();
     void setObject();
 
@@ -226,7 +227,7 @@ class Json
   private:
     void clear();
     void marshal(std::string&, bool, int) const;
-    static void stringify(std::string&, const std::string_view&);
-    static void serialize(std::string&, const std::string_view&);
+    static void stringify(std::string&, const JSON_STRING_VIEW_&);
+    static void serialize(std::string&, const JSON_STRING_VIEW_&);
     static Status parse(Json&, const char*&, const char*, int, int);
 };
