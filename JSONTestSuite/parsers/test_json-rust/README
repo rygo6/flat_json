@@ -1,0 +1,2 @@
+cargo build && ./target/debug/tj ./Desktop/in.json 
+

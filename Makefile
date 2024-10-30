@@ -1,0 +1,37 @@
+check:	json_test.ok			\
+	jsontestsuite_test.ok
+
+clean:
+	rm -f *.o *.a *.ok *_test
+
+json.o: json.cpp json.h
+
+json_test.o: json_test.cpp json.h
+json_test: json_test.o json.o double-conversion.a
+
+jsontestsuite_test.o: jsontestsuite_test.cpp json.h
+jsontestsuite_test: jsontestsuite_test.o json.o double-conversion.a
+
+%: %.o
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) $(OUTPUT_OPTION) $^
+
+%.ok: %
+	./$<
+	touch $@
+
+################################################################################
+# double-conversion
+
+double-conversion.a:			\
+		bignum.o		\
+		bignum-dtoa.o		\
+		cached-powers.o		\
+		double-to-string.o	\
+		fast-dtoa.o		\
+		fixed-dtoa.o		\
+		string-to-double.o	\
+		strtod.o
+	$(AR) rcsD $@ $^
+
+%.o: double-conversion/%.cc
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c $<

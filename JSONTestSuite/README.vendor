@@ -1,0 +1,18 @@
+DESCRIPTION
+
+  Collection of test vectors for JSON parsing.
+
+ORIGIN
+
+  git@github.com:nst/JSONTestSuite.git
+  c2011ba75905d2b36baccd60e4c364e785c29885
+  Mon Sep 30 06:59:23 2024 +0200
+
+LICENSE
+
+  MIT
+
+LOCAL MODIFICATIONS
+
+  - Source examples use portable paths.
+  - Prebuilt artifacts containing machine-specific paths and editor user state are excluded.

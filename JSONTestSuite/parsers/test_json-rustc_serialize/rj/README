@@ -1,0 +1,2 @@
+cd ./JSONTestSuite/test_json-rustc_serialize/rj; cargo build ;./JSONTestSuite/test_json-rustc_serialize/rj/target/debug/rj ./JSONTestSuite/test_cases/n_177.json
+
