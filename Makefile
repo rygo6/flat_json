@@ -7,6 +7,9 @@ clean:
 
 json.o: json.cpp json.h
 
+fuzz.o: fuzz.cpp json.h
+fuzz: fuzz.o json.o double-conversion.a
+
 json_test.o: json_test.cpp json.h
 json_test: json_test.o json.o double-conversion.a
 

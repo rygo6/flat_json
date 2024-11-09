@@ -406,6 +406,60 @@ json_test_suite()
     }
 }
 
+void
+afl_regression()
+{
+    Json::parse("[{\"\":1,3:14,]\n");
+    Json::parse("[\n"
+                "\n"
+                "3E14,\n"
+                "{\"!\":4,733:4,[\n"
+                "\n"
+                "3EL%,3E14,\n"
+                "{][1][1,,]");
+    Json::parse("[\n"
+                "null,\n"
+                "1,\n"
+                "3.14,\n"
+                "{\"a\": \"b\",\n"
+                "3:14,ull}\n"
+                "]");
+    Json::parse("[\n"
+                "\n"
+                "3E14,\n"
+                "{\"a!!!!!!!!!!!!!!!!!!\":4, \n"
+                "\n"
+                "3:1,,\n"
+                "3[\n"
+                "\n"
+                "]");
+    Json::parse("[\n"
+                "\n"
+                "3E14,\n"
+                "{\"a!!:!!!!!!!!!!!!!!!\":4, \n"
+                "\n"
+                "3E1:4, \n"
+                "\n"
+                "3E1,,\n"
+                ",,\n"
+                "3[\n"
+                "\n"
+                "]");
+    Json::parse("[\n"
+                "\n"
+                "3E14,\n"
+                "{\"!\":4,733:4,[\n"
+                "\n"
+                "3E1%,][1,,]");
+    Json::parse("[\n"
+                "\n"
+                "3E14,\n"
+                "{\"!\":4,733:4,[\n"
+                "\n"
+                "3EL%,3E14,\n"
+                "{][1][1,,]");
+}
+
 int
 main()
 {
@@ -413,6 +467,7 @@ main()
     deep_test();
     parse_test();
     round_trip_test();
+    afl_regression();
 
     BENCH(2000, 1, object_test());
     BENCH(2000, 1, deep_test());
