@@ -5,6 +5,11 @@ json.cpp is an anti-modern JSON parsing / serialization library for C++.
 This project is a reaction against <https://github.com/nlohmann/json/>
 which provides a modern C++ library for JSON. Our alternative:
 
+- **Goes 10x faster**. With `gcc -O3` 13.2 on Ubuntu 14.04 using an AMD
+  Ryzen Threadripper PRO 7995WX this library was able to parse the
+  complicated JSON examples in [json\_test.cpp](json_test.cpp) 39x
+  faster than nlohmann's library.
+
 - **Compiles 10x faster**. An object that does nothing with JSON except
   calling `nlohmann::ordered_json::parse` will take at minimum 1200 ms
   to compile. This is an unacceptably slow minimum overhead. With this
@@ -37,6 +42,165 @@ those bits are made up, since a float32 can't hold that much precision.
 But with this library, the `Json` object will remember that you passed
 it a float, and then serialize it as such when you call `toString()`,
 thus allowing for more efficient readable responses.
+
+## Benchmark Results
+
+Here are some quick and dirty tests for parsing and serialization. The
+lower numbers are better. See [json\_test.cpp](json_test.cpp) and
+[nlohmann/json\_test.cpp](nlohmann/json_test.cpp).
+
+```
+    # json.cpp
+         88 ns 2000x object_test()
+        304 ns 2000x deep_test()
+        816 ns 2000x parse_test()
+       1588 ns 2000x round_trip_test()
+      12567 ns 2000x json_test_suite()
+
+    # nlohmann::ordered_json
+        202 ns 2000x object_test()
+        659 ns 2000x deep_test()
+       1928 ns 2000x parse_test()
+       4258 ns 2000x round_trip_test()
+     484096 ns 2000x json_test_suite()
+```
+
+## Usage Example
+
+The [llamafile](https://github.com/Mozilla-Ocho/llamafile) project uses
+this JSON library. Here are some excerpts from its OpenAI API compatible
+`/v1/chat/completions` endpoint.
+
+Here's the code where it parses the incoming HTTP body and validates it.
+
+```cpp
+    // object<model, messages, ...>
+    std::pair<Json::Status, Json> json = Json::parse(payload_);
+    if (json.first != Json::success)
+        return send_error(400, Json::StatusToString(json.first));
+    if (!json.second.isObject())
+        return send_error(400, "JSON body must be an object");
+
+    // fields openai documents that we don't support yet
+    if (!json.second["tools"].isNull())
+        return send_error(400, "OpenAI tools field not supported yet");
+    if (!json.second["audio"].isNull())
+        return send_error(400, "OpenAI audio field not supported yet");
+
+    // model: string
+    Json& model = json.second["model"];
+    if (!model.isString())
+        return send_error(400, "JSON missing model string");
+    params->model = std::move(model.getString());
+
+    // messages: array<object<role:string, content:string>>
+    if (!json.second["messages"].isArray())
+        return send_error(400, "JSON missing messages array");
+    std::vector<Json>& messages = json.second["messages"].getArray();
+    if (messages.empty())
+        return send_error(400, "JSON messages array is empty");
+    for (Json& message : messages) {
+        if (!message.isObject())
+            return send_error(400, "messages array must hold objects");
+        if (!message["role"].isString())
+            return send_error(400, "message must have string role");
+        if (!is_legal_role(message["role"].getString()))
+            return send_error(400, "message role not system user assistant");
+        if (!message["content"].isString())
+            return send_error(400, "message must have string content");
+        params->messages.emplace_back(
+          std::move(message["role"].getString()),
+          std::move(message["content"].getString()));
+    }
+
+    // ...
+```
+
+Here's the code where it sends a response.
+
+```cpp
+struct V1ChatCompletionResponse
+{
+    std::string content;
+    Json json;
+};
+
+bool
+Client::v1_chat_completions()
+{
+    // ...
+
+    V1ChatCompletionResponse* response = new V1ChatCompletionResponse;
+    defer_cleanup(cleanup_response, response);
+
+    // ...
+
+    // setup response json
+    response->json["id"].setString(generate_id());
+    response->json["object"].setString("chat.completion");
+    response->json["model"].setString(params->model);
+    response->json["system_fingerprint"].setString(slot_->system_fingerprint_);
+    response->json["choices"].setArray();
+    Json& choice = response->json["choices"][0];
+    choice.setObject();
+    choice["index"].setLong(0);
+    choice["logprobs"].setNull();
+    choice["finish_reason"].setNull();
+
+    // initialize response
+    if (params->stream) {
+        char* p = append_http_response_message(obuf_.p, 200);
+        p = stpcpy(p, "Content-Type: text/event-stream\r\n");
+        if (!send_response_start(obuf_.p, p))
+            return false;
+        choice["delta"].setObject();
+        choice["delta"]["role"].setString("assistant");
+        choice["delta"]["content"].setString("");
+        response->json["created"].setLong(timespec_real().tv_sec);
+        response->content = make_event(response->json);
+        choice.getObject().erase("delta");
+        if (!send_response_chunk(response->content))
+            return false;
+    }
+
+    // prediction time
+    int completion_tokens = 0;
+    const char* finish_reason = "length";
+    for (;;) {
+        // do token generation ...
+    }
+    choice["finish_reason"].setString(finish_reason);
+
+    // finalize response
+    cleanup_slot(this);
+    if (params->stream) {
+        choice["delta"].setObject();
+        choice["delta"]["content"].setString("");
+        response->json["created"].setLong(timespec_real().tv_sec);
+        response->content = make_event(response->json);
+        choice.getObject().erase("delta");
+        if (!send_response_chunk(response->content))
+            return false;
+        return send_response_finish();
+    } else {
+        Json& usage = response->json["usage"];
+        usage.setObject();
+        usage["prompt_tokens"].setLong(prompt_tokens);
+        usage["completion_tokens"].setLong(completion_tokens);
+        usage["total_tokens"].setLong(completion_tokens + prompt_tokens);
+        choice["message"].setObject();
+        choice["message"]["role"].setString("assistant");
+        choice["message"]["content"].setString(std::move(response->content));
+        response->json["created"].setLong(timespec_real().tv_sec);
+        char* p = append_http_response_message(obuf_.p, 200);
+        p = stpcpy(p, "Content-Type: application/json\r\n");
+        response->content = response->json.toStringPretty();
+        response->content += '\n';
+        return send_response(obuf_.p, p, response->content);
+    }
+```
+
+See also <https://github.com/Mozilla-Ocho/llamafile/blob/main/llamafile/server/v1_chat_completions.cpp>
 
 ## JSONTestSuite Results
 
