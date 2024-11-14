@@ -5,7 +5,7 @@ json.cpp is an anti-modern JSON parsing / serialization library for C++.
 This project is a reaction against <https://github.com/nlohmann/json/>
 which provides a modern C++ library for JSON. Our alternative:
 
-- **Goes 10x faster**. With `gcc -O3` 13.2 on Ubuntu 14.04 using an AMD
+- **Goes 2x faster**. With `gcc -O3` 13.2 on Ubuntu 14.04 using an AMD
   Ryzen Threadripper PRO 7995WX this library was able to parse the
   complicated JSON examples in [json\_test.cpp](json_test.cpp) 39x
   faster than nlohmann's library. Please don't take these benchmark
