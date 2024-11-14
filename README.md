@@ -8,7 +8,10 @@ which provides a modern C++ library for JSON. Our alternative:
 - **Goes 10x faster**. With `gcc -O3` 13.2 on Ubuntu 14.04 using an AMD
   Ryzen Threadripper PRO 7995WX this library was able to parse the
   complicated JSON examples in [json\_test.cpp](json_test.cpp) 39x
-  faster than nlohmann's library.
+  faster than nlohmann's library. Please don't take these benchmark
+  numbers too seriously, because the libraries differ in what they
+  accept and reject. However we do feel confident saying this library
+  generally goes _faster_.
 
 - **Compiles 10x faster**. An object that does nothing with JSON except
   calling `nlohmann::ordered_json::parse` will take at minimum 1200 ms
@@ -47,7 +50,10 @@ thus allowing for more efficient readable responses.
 
 Here are some quick and dirty tests for parsing and serialization. The
 lower numbers are better. See [json\_test.cpp](json_test.cpp) and
-[nlohmann/json\_test.cpp](nlohmann/json_test.cpp).
+[nlohmann/json\_test.cpp](nlohmann/json_test.cpp). Please don't take
+these benchmark numbers too seriously, because the libraries differ in
+what they accept and reject. However we do feel confident saying this
+library generally goes _faster_.
 
 ```
     # json.cpp
