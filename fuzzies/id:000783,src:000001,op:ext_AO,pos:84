@@ -1,0 +1,82 @@
+{
+  "empty_object": {},
+  "empty_array": [],
+  "nested_empty": {"a": {}, "b": []},
+ 
+            "": {
+    "level1": {
+      "level2": { "level3": {
+          "level4": {
+            "level5": "deep"
+  }
+        }
+      }
+    }
+  },
+  "array_nesting": [[[[[["deep"]]]]]], 
+  "number_edge_cases": {
+    "zero": 0,
+    "negative_zero": -0,
+    "max_int": 90071991,
+    "min_int": -9007199254740991,
+    "decimal_point": 0.0,
+    "negative_decimal": -0.0,
+    "scientific": 1.23e-4,
+    "negative_scientific": -1.23e+4,
+    "float_precision": 1.2345678901234567
+  },
+  "string_edge_cases": {
+    "empty": "",
+    "space": " ",
+    "escaped_quotes": "\"quoted\"",
+    "escaped_chars": "\b\f\n\r\t",
+    "unicode_escapes": "\u0000\uffff\ud800\udc00",
+    "slashes": "\\\/\\\\",
+    "control_chars": "\u0001\u001f",
+    "surrogate_pairs": "\ud83d\ude00"
+  },
+  "array_edge_cases": [
+    null,
+    true,
+    false,
+    [],
+    [[]],
+    [null, null],
+    [true, false, null],
+    ["", " ", "  "],
+    [0, -0, 0.0, -0.0]
+  ],
+  "mixed_nesting": {
+    "array_in_object": {"array": [1,2,3]},
+    "object_in_array": [{"key": "value"}],
+    "complex": [{"a":[{"b":{"c":[1,2,3]}}]}]
+  },
+  "special_chars": {
+    "ascii_boundaries": "\u0000\u001f\u007f",
+    "unicode_boundaries": "\u0080\u00ff\u0100\uffff",
+    "quotes_in_strings": "\"'\"'",
+    "whitespace": "\r\n\t ",
+    "zero_width": "\u200b\ufeff",
+    "direction_marks": "\u200e\u200f",
+    "combining_chars": "a\u0300\u0301\u0302"
+  },
+  "large_structures": {
+    "repeated_keys": {"a":"a","b":"b","c":"c","d":"d","e":"e","f":"f","g":"g","h":"h","i":"i","j":"j"},
+    "long_array": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],
+    "nested_arrays": [[1],[2],[3],[4],[5],[6],[7],[8],[9],[10]]
+  },
+  "type_transitions": {
+    "number_to_string": ["1", "2", "3"],
+    "string_to_number": [1, "2", 3],
+    "boolean_mix": [true, "true", 1, "1"],
+    "null_mix": [null, "null", 0, ""]
+  },
+  "key_edge_cases": {
+    "": "empty_key",
+    " ": "space_key",
+    "\"": "quote_key",
+    "\\": "backslash_key",
+    "\u0000": "null_char_key",
+    "\uffff": "max_unicode_key"
+  }
+}
