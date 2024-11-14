@@ -1,6 +1,6 @@
 # JSON for Classic C++
 
-json.cpp is an anti-modern JSON parsing / serialization library for C++.
+json.cpp is a baroque JSON parsing / serialization library for C++.
 
 This project is a reaction against <https://github.com/nlohmann/json/>
 which provides a modern C++ library for JSON. Our alternative:
