@@ -550,3 +550,13 @@ y_structure_trailing_newline.json                                      PASSED
 y_structure_true_in_array.json                                         PASSED
 y_structure_whitespace_array.json                                      PASSED
 ```
+
+## History
+
+This JSON parser was coded in 2022 by Justine Tunney and Gautham
+Venkatasubramanian. It was originally written in C for Lua in
+[Redbean](https://redbean.dev). See
+<https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c> for
+the original source code. In 2024 Mozilla sponsored converting the
+Redbean JSON library to C++ for
+[llamafile](https://github.com/Mozilla-Ocho/llamafile).
