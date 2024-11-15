@@ -1,3 +1,5 @@
+CXXFLAGS = -std=c++11 -O
+
 check:	json_test.ok			\
 	jsontestsuite_test.ok
 

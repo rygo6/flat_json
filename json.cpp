@@ -75,7 +75,7 @@
           (unsigned)((((wc) - 0x10000) & 1023) + 0xDC00) << 16) \
        : 0xFFFD)
 
-namespace jart {
+namespace jt {
 
 static const char kJsonStr[256] = {
     1,  1,  1,  1,  1,  1,  1,  1, // 0000 ascii (0)
@@ -542,7 +542,7 @@ Json::setString(std::string&& value)
 }
 
 void
-Json::setString(const JSON_STRING_VIEW_& value)
+Json::setString(const JTJSON_STRING_VIEW& value)
 {
     clear();
     type_ = String;
@@ -692,7 +692,7 @@ Json::marshal(std::string& b, bool pretty, int indent) const
 }
 
 void
-Json::stringify(std::string& b, const JSON_STRING_VIEW_& s)
+Json::stringify(std::string& b, const JTJSON_STRING_VIEW& s)
 {
     b += '"';
     serialize(b, s);
@@ -700,7 +700,7 @@ Json::stringify(std::string& b, const JSON_STRING_VIEW_& s)
 }
 
 void
-Json::serialize(std::string& sb, const JSON_STRING_VIEW_& s)
+Json::serialize(std::string& sb, const JTJSON_STRING_VIEW& s)
 {
     size_t i, j, m;
     wint_t x, a, b;
@@ -1215,7 +1215,7 @@ Json::parse(Json& json, const char*& p, const char* e, int context, int depth)
 }
 
 std::pair<Json::Status, Json>
-Json::parse(const JSON_STRING_VIEW_& s)
+Json::parse(const JTJSON_STRING_VIEW& s)
 {
     Json::Status s2;
     std::pair<Json::Status, Json> res;
@@ -1305,4 +1305,4 @@ Json::StatusToString(Json::Status status)
     }
 }
 
-} // namespace jart
+} // namespace jt

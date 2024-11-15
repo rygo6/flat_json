@@ -26,7 +26,7 @@
 
 #define STRING(sl) std::string(sl, sizeof(sl) - 1)
 
-using jart::Json;
+using jt::Json;
 
 static const char kHuge[] = R"([
     "JSON Test Pattern pass1",

@@ -26,7 +26,7 @@
 #define HI_BAD "\033[31m" // red
 #define HI_OK "\033[33m" // yellow
 
-using jart::Json;
+using jt::Json;
 
 static const char* const kParsingTests[] = {
     "i_number_double_huge_neg_exp.json",
