@@ -245,6 +245,20 @@ Json::Json(unsigned long long value)
     }
 }
 
+Json::Json(const char* value)
+{
+    if (value) {
+        type_ = String;
+        new (&string_value) std::string(value);
+    } else {
+        type_ = Null;
+    }
+}
+
+Json::Json(const JTJSON_STRING_VIEW& value) : type_(String), string_value(value)
+{
+}
+
 Json::~Json()
 {
     clear();

@@ -100,6 +100,8 @@ class Json
     Json(const Json&);
     Json(Json&&) noexcept;
     Json(unsigned long long);
+    Json(const char*);
+    Json(const JTJSON_STRING_VIEW&);
     ~Json();
 
     Json(const std::nullptr_t = nullptr) : type_(Null)
@@ -130,15 +132,7 @@ class Json
     {
     }
 
-    Json(const char* value) : type_(String), string_value(value)
-    {
-    }
-
     Json(std::string&& value) : type_(String), string_value(std::move(value))
-    {
-    }
-
-    Json(const JTJSON_STRING_VIEW& value) : type_(String), string_value(value)
     {
     }
 
