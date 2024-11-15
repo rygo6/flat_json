@@ -26,6 +26,8 @@
 #define JSON_STRING_VIEW_ std::string
 #endif
 
+namespace jart {
+
 class Json
 {
   public:
@@ -231,3 +233,5 @@ class Json
     static void serialize(std::string&, const JSON_STRING_VIEW_&);
     static Status parse(Json&, const char*&, const char*, int, int);
 };
+
+} // namespace jart

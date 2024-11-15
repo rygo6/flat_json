@@ -75,6 +75,8 @@
           (unsigned)((((wc) - 0x10000) & 1023) + 0xDC00) << 16) \
        : 0xFFFD)
 
+namespace jart {
+
 static const char kJsonStr[256] = {
     1,  1,  1,  1,  1,  1,  1,  1, // 0000 ascii (0)
     1,  1,  1,  1,  1,  1,  1,  1, // 0010
@@ -1302,3 +1304,5 @@ Json::StatusToString(Json::Status status)
             abort();
     }
 }
+
+} // namespace jart
