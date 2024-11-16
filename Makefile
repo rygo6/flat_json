@@ -37,7 +37,7 @@ double-conversion.a:			\
 		fixed-dtoa.o		\
 		string-to-double.o	\
 		strtod.o
-	$(AR) rcsD $@ $^
+	$(AR) rcs $@ $^
 
 %.o: double-conversion/%.cc
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c $<
