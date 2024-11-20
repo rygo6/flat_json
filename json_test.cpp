@@ -16,7 +16,6 @@
 // limitations under the License.
 
 #include "json.h"
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>

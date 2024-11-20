@@ -16,9 +16,9 @@
 // limitations under the License.
 
 #include "json.h"
-
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #define HI_RESET "\033[0m" // green
 #define HI_GOOD "\033[32m" // green
@@ -26,11 +26,6 @@
 #define HI_OK "\033[33m" // yellow
 
 using jt::Json;
-
-#include "json.h"
-#include <cstdio>
-#include <cstdlib>
-#include <string>
 
 static const char* const kParsingTests[] = {
     "i_number_double_huge_neg_exp.json",
