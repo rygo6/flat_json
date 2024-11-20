@@ -543,8 +543,12 @@ void
 Json::setString(const char* value)
 {
     clear();
-    type_ = String;
-    new (&string_value) std::string(value);
+    if (value) {
+        type_ = String;
+        new (&string_value) std::string(value);
+    } else {
+        type_ = Null;
+    }
 }
 
 void
