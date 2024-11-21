@@ -597,7 +597,7 @@ Json::operator[](size_t index)
 }
 
 Json&
-Json::operator[](const std::string& key)
+Json::operator[](const JTJSON_STRING_VIEW& key)
 {
     if (type_ != Object) {
         clear();

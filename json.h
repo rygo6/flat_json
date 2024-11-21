@@ -213,7 +213,7 @@ class Json
     Json& operator=(Json&&) noexcept;
 
     Json& operator[](size_t);
-    Json& operator[](const std::string&);
+    Json& operator[](const JTJSON_STRING_VIEW&);
 
     operator std::string() const
     {
