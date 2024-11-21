@@ -55,11 +55,11 @@ than 3x) advantage, which we haven't figured out how to explain yet.
 
 ```
     # json.cpp
-         88 ns 2000x object_test()
-        304 ns 2000x deep_test()
-        816 ns 2000x parse_test()
-       1588 ns 2000x round_trip_test()
-       5838 ns 2000x json_test_suite()
+        71 ns 2000x object_test()
+       226 ns 2000x deep_test()
+       675 ns 2000x parse_test()
+      1309 ns 2000x round_trip_test()
+     10462 ns 2000x json_test_suite()
 
     # nlohmann::ordered_json
         202 ns 2000x object_test()
@@ -79,28 +79,28 @@ Here's the code where it parses the incoming HTTP body and validates it.
 
 ```cpp
     // object<model, messages, ...>
-    std::pair<Json::Status, Json> json = Json::parse(payload_);
-    if (json.first != Json::success)
-        return send_error(400, Json::StatusToString(json.first));
-    if (!json.second.isObject())
+    auto [status, json] = jt::Json::parse(std::string(payload_));
+    if (status != jt::Json::success)
+        return send_error(400, jt::Json::StatusToString(status));
+    if (!json.isObject())
         return send_error(400, "JSON body must be an object");
 
     // fields openai documents that we don't support yet
-    if (!json.second["tools"].isNull())
+    if (json.contains("tools"))
         return send_error(400, "OpenAI tools field not supported yet");
-    if (!json.second["audio"].isNull())
+    if (json.contains("audio"))
         return send_error(400, "OpenAI audio field not supported yet");
 
     // model: string
-    Json& model = json.second["model"];
+    jt::Json& model = json["model"];
     if (!model.isString())
         return send_error(400, "JSON missing model string");
-    params->model = std::move(model.getString());
+    params->model = model.getString();
 
     // messages: array<object<role:string, content:string>>
-    if (!json.second["messages"].isArray())
+    if (!json["messages"].isArray())
         return send_error(400, "JSON missing messages array");
-    std::vector<Json>& messages = json.second["messages"].getArray();
+    std::vector<Json>& messages = json["messages"].getArray();
     if (messages.empty())
         return send_error(400, "JSON messages array is empty");
     for (Json& message : messages) {
@@ -112,9 +112,8 @@ Here's the code where it parses the incoming HTTP body and validates it.
             return send_error(400, "message role not system user assistant");
         if (!message["content"].isString())
             return send_error(400, "message must have string content");
-        params->messages.emplace_back(
-          std::move(message["role"].getString()),
-          std::move(message["content"].getString()));
+        params->messages.emplace_back(message["role"].getString(),
+                                      message["content"].getString());
     }
 
     // ...
@@ -126,7 +125,7 @@ Here's the code where it sends a response.
 struct V1ChatCompletionResponse
 {
     std::string content;
-    Json json;
+    jt::Json json;
 };
 
 bool
@@ -140,16 +139,14 @@ Client::v1_chat_completions()
     // ...
 
     // setup response json
-    response->json["id"].setString(generate_id());
-    response->json["object"].setString("chat.completion");
-    response->json["model"].setString(params->model);
-    response->json["system_fingerprint"].setString(slot_->system_fingerprint_);
-    response->json["choices"].setArray();
+    response->json["id"] = generate_id();
+    response->json["object"] = "chat.completion";
+    response->json["model"] = params->model;
+    response->json["system_fingerprint"] = slot_->system_fingerprint_;
     Json& choice = response->json["choices"][0];
-    choice.setObject();
-    choice["index"].setLong(0);
-    choice["logprobs"].setNull();
-    choice["finish_reason"].setNull();
+    choice["index"] = 0;
+    choice["logprobs"] = nullptr;
+    choice["finish_reason"] = nullptr;
 
     // initialize response
     if (params->stream) {
@@ -157,10 +154,9 @@ Client::v1_chat_completions()
         p = stpcpy(p, "Content-Type: text/event-stream\r\n");
         if (!send_response_start(obuf_.p, p))
             return false;
-        choice["delta"].setObject();
-        choice["delta"]["role"].setString("assistant");
-        choice["delta"]["content"].setString("");
-        response->json["created"].setLong(timespec_real().tv_sec);
+        choice["delta"]["role"] = "assistant";
+        choice["delta"]["content"] = "";
+        response->json["created"] = timespec_real().tv_sec;
         response->content = make_event(response->json);
         choice.getObject().erase("delta");
         if (!send_response_chunk(response->content))
@@ -173,14 +169,13 @@ Client::v1_chat_completions()
     for (;;) {
         // do token generation ...
     }
-    choice["finish_reason"].setString(finish_reason);
+    choice["finish_reason"] = finish_reason;
 
     // finalize response
     cleanup_slot(this);
     if (params->stream) {
-        choice["delta"].setObject();
-        choice["delta"]["content"].setString("");
-        response->json["created"].setLong(timespec_real().tv_sec);
+        choice["delta"]["content"] = "";
+        response->json["created"] = timespec_real().tv_sec;
         response->content = make_event(response->json);
         choice.getObject().erase("delta");
         if (!send_response_chunk(response->content))
@@ -188,14 +183,12 @@ Client::v1_chat_completions()
         return send_response_finish();
     } else {
         Json& usage = response->json["usage"];
-        usage.setObject();
-        usage["prompt_tokens"].setLong(prompt_tokens);
-        usage["completion_tokens"].setLong(completion_tokens);
-        usage["total_tokens"].setLong(completion_tokens + prompt_tokens);
-        choice["message"].setObject();
-        choice["message"]["role"].setString("assistant");
-        choice["message"]["content"].setString(std::move(response->content));
-        response->json["created"].setLong(timespec_real().tv_sec);
+        usage["prompt_tokens"] = prompt_tokens;
+        usage["completion_tokens"] = completion_tokens;
+        usage["total_tokens"] = completion_tokens + prompt_tokens;
+        choice["message"]["role"] = "assistant";
+        choice["message"]["content"] = std::move(response->content);
+        response->json["created"] = timespec_real().tv_sec;
         char* p = append_http_response_message(obuf_.p, 200);
         p = stpcpy(p, "Content-Type: application/json\r\n");
         response->content = response->json.toStringPretty();

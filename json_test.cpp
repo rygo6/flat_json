@@ -159,6 +159,16 @@ static const struct
     std::string after;
 } kRoundTrip[] = {
 
+    // types
+    { "0", "0" },
+    { "[]", "[]" },
+    { "{}", "{}" },
+    { "0.1", "0.1" },
+    { "\"\"", "\"\"" },
+    { "null", "null" },
+    { "true", "true" },
+    { "false", "false" },
+
     // valid utf16 sequences
     { " [\"\\u0020\"] ", "[\" \"]" },
     { " [\"\\u00A0\"] ", "[\"\\u00a0\"]" },
@@ -447,6 +457,7 @@ main()
     parse_test();
     round_trip_test();
     afl_regression();
+    json_test_suite();
 
     BENCH(2000, 1, object_test());
     BENCH(2000, 1, deep_test());
