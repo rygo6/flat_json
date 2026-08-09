@@ -110,9 +110,9 @@ void
 object_test()
 {
     flat::FixedArena<1024> a;
-    const char* text =
-      flat::WriteJson(flat::JsonObject({ { "content", "hello" } }), a);
-    if (strcmp(text, "{\"content\":\"hello\"}"))
+    const char* text;
+    if (flat::WriteJson(flat::JsonObject({ { "content", "hello" } }), a, &text) != Json::SUCCESS ||
+        strcmp(text, "{\"content\":\"hello\"}"))
         exit(1);
 }
 
@@ -120,8 +120,9 @@ void
 direct_serialization_test()
 {
     flat::FixedArena<1024> a;
-    const char* output =
-      flat::WriteJson(flat::JsonObject({ { "answer", 42 } }), a);
+    const char* output;
+    if (flat::WriteJson(flat::JsonObject({ { "answer", 42 } }), a, &output) != Json::SUCCESS)
+        exit(17);
     if (output < a.bytes || output >= a.bytes + sizeof(a.bytes))
         exit(17);
     if (strcmp(output, "{\"answer\":42}"))
@@ -130,9 +131,12 @@ direct_serialization_test()
     unsigned char mapped_bytes[1024];
     flat::MappedBuffer mapped_buffer(mapped_bytes, sizeof(mapped_bytes), 13);
     uint64_t mapped_offset = mapped_buffer.cursor;
-    const char* mapped_output = flat::WriteJson(
-      flat::JsonObject({ { "model", "gpt-5" }, { "stream", true } }),
-      mapped_buffer);
+    const char* mapped_output;
+    if (flat::WriteJson(
+          flat::JsonObject({ { "model", "gpt-5" }, { "stream", true } }),
+          mapped_buffer,
+          &mapped_output) != Json::SUCCESS)
+        exit(40);
     if (mapped_output != (char*)mapped_bytes + mapped_offset)
         exit(40);
     if (strcmp(mapped_output, "{\"model\":\"gpt-5\",\"stream\":true}"))
@@ -141,17 +145,38 @@ direct_serialization_test()
         exit(42);
 
     flat::FixedArena<512> parse_arena;
-    size_t mapped_size = mapped_buffer.cursor - mapped_offset - 1;
-    auto parsed = Json::Parse(parse_arena, mapped_output, mapped_size);
-    if (parsed.first != Json::SUCCESS ||
-        strcmp((*parsed.second)["model"].GetString(), "gpt-5") ||
-        !(*parsed.second)["stream"].GetBool())
+    const Json* pJson;
+    Json::Status status = Json::Parse(mapped_output, strlen(mapped_output), parse_arena, &pJson);
+    if (status != Json::SUCCESS ||
+        strcmp((*pJson)["model"].GetString(), "gpt-5") ||
+        !(*pJson)["stream"].GetBool())
         exit(44);
     uint64_t parsed_offset = mapped_buffer.cursor;
-    const char* parsed_output = flat::WriteJson(*parsed.second, mapped_buffer);
+    const char* parsed_output;
+    if (flat::WriteJson(*pJson, mapped_buffer, &parsed_output) != Json::SUCCESS)
+        exit(45);
     if (parsed_output != (char*)mapped_bytes + parsed_offset ||
         strcmp(parsed_output, mapped_output))
         exit(45);
+
+    unsigned char small_bytes[8];
+    flat::MappedBuffer small_buffer(small_bytes, sizeof(small_bytes));
+    const char* failed_output = mapped_output;
+    if (flat::WriteJson(flat::JsonObject({ { "too", "large" } }), small_buffer, &failed_output) != Json::INSUFFICIENT_SPACE ||
+        failed_output || small_buffer.cursor)
+        exit(51);
+    if (flat::WriteJson(flat::JsonValue(nullptr), small_buffer, &failed_output) != Json::SUCCESS ||
+        strcmp(failed_output, "null") || small_buffer.cursor != 5)
+        exit(52);
+
+    flat::FixedArena<24> small_arena;
+    failed_output = mapped_output;
+    if (flat::WriteJson(flat::JsonObject({ { "too", "large" } }), small_arena, &failed_output) != Json::INSUFFICIENT_SPACE ||
+        failed_output)
+        exit(53);
+    if (flat::WriteJson(flat::JsonValue(nullptr), small_arena, &failed_output) != Json::SUCCESS ||
+        strcmp(failed_output, "null"))
+        exit(54);
 }
 
 void
@@ -167,7 +192,9 @@ mapped_file_test()
         flat::MappedBuffer output(path, 1024);
         if (!output.IsValid())
             exit(47);
-        flat::WriteJson(flat::JsonObject({ { "mapped", true } }), output);
+        const char* pText;
+        if (flat::WriteJson(flat::JsonObject({ { "mapped", true } }), output, &pText) != Json::SUCCESS)
+            exit(47);
     }
 
     {
@@ -179,9 +206,10 @@ mapped_file_test()
     }
 
     flat::FixedArena<512> arena;
-    auto parsed = Json::Parse(arena, flat::MappedBuffer(path));
-    if (parsed.first != Json::SUCCESS ||
-        !parsed.second->GetObject()["mapped"].GetBool())
+    const Json* pJson;
+    Json::Status status = Json::Parse(flat::MappedBuffer(path), arena, &pJson);
+    if (status != Json::SUCCESS ||
+        !pJson->GetObject()["mapped"].GetBool())
         exit(49);
 
     unlink(path);
@@ -218,24 +246,30 @@ numeric_arena_test()
     };
     for (size_t i = 0; i < ARRAYLEN(values); ++i) {
         flat::FixedArena<8192> output_arena;
-        const char* text = flat::WriteJson(values[i], output_arena);
+        const char* text;
+        if (flat::WriteJson(values[i], output_arena, &text) != Json::SUCCESS)
+            exit(27);
         if (text < output_arena.bytes ||
             text >= output_arena.bytes + sizeof(output_arena.bytes))
             exit(27);
 
         flat::FixedArena<8192> parse_arena;
-        auto parsed = Json::Parse(parse_arena, text, strlen(text));
-        if (parsed.first != Json::SUCCESS)
+        const Json* pJson;
+        Json::Status status = Json::Parse(text, strlen(text), parse_arena, &pJson);
+        if (status != Json::SUCCESS)
             exit(28);
         double expected = values[i] == 0.0 ? 0.0 : values[i];
-        if (DoubleBits(parsed.second->GetNumber()) != DoubleBits(expected))
+        if (DoubleBits(pJson->GetNumber()) != DoubleBits(expected))
             exit(29);
     }
 
     flat::FixedArena<4096> special_arena;
-    const char* special = flat::WriteJson(
-      flat::JsonArray({ NAN, INFINITY, -INFINITY, 1.25f }),
-      special_arena);
+    const char* special;
+    if (flat::WriteJson(
+          flat::JsonArray({ NAN, INFINITY, -INFINITY, 1.25f }),
+          special_arena,
+          &special) != Json::SUCCESS)
+        exit(30);
     if (strcmp(special, "[null,1e5000,-1e5000,1.25]"))
         exit(30);
 }
@@ -260,8 +294,8 @@ strict_string_test()
     };
     for (size_t i = 0; i < ARRAYLEN(invalid); ++i) {
         flat::FixedArena<1024> arena;
-        if (Json::Parse(arena, invalid[i].data, invalid[i].size).first !=
-            Json::MALFORMED)
+        const Json* pJson;
+        if (Json::Parse(invalid[i].data, invalid[i].size, arena, &pJson) != Json::MALFORMED)
             exit(31);
     }
 
@@ -275,8 +309,8 @@ strict_string_test()
     };
     for (size_t i = 0; i < ARRAYLEN(valid); ++i) {
         flat::FixedArena<1024> arena;
-        if (Json::Parse(arena, valid[i].data, valid[i].size).first !=
-            Json::SUCCESS)
+        const Json* pJson;
+        if (Json::Parse(valid[i].data, valid[i].size, arena, &pJson) != Json::SUCCESS)
             exit(32);
     }
 }
@@ -285,39 +319,43 @@ void
 immutable_layout_test()
 {
     flat::FixedArena<2048> a;
-    auto parsed = Json::Parse(a, R"([1,[2,3],{"x":4,"s":"ok"}])");
-    if (parsed.first != Json::SUCCESS)
+    const Json* pJson;
+    Json::Status status = Json::Parse(R"([1,[2,3],{"x":4,"s":"ok"}])", a, &pJson);
+    if (status != Json::SUCCESS)
         exit(20);
-    flat::u32 root_offset = (flat::u32)((const char*)parsed.second - a.pBase);
-    if ((const char*)parsed.second < a.bytes ||
-        (const char*)parsed.second >= a.bytes + sizeof(a.bytes))
+    flat::u32 root_offset = (flat::u32)((const char*)pJson - a.pBase);
+    if ((const char*)pJson < a.bytes ||
+        (const char*)pJson >= a.bytes + sizeof(a.bytes))
         exit(21);
-    if ((*parsed.second)[0].GetLong() != 1 ||
-        (*parsed.second)[1][1].GetLong() != 3 ||
-        (*parsed.second)[2]["x"].GetLong() != 4)
+    if ((*pJson)[0].GetLong() != 1 ||
+        (*pJson)[1][1].GetLong() != 3 ||
+        (*pJson)[2]["x"].GetLong() != 4)
         exit(22);
-    const Json& array = parsed.second->GetArray();
+    const Json& array = pJson->GetArray();
     const Json& object = array[2].GetObject();
-    if (&array != parsed.second || array.GetSize() != 3 ||
+    if (&array != pJson || array.GetSize() != 3 ||
         &object != &array[2] || object.GetSize() != 2)
         exit(50);
-    if (parsed.second->span != sizeof(a.bytes) - root_offset)
+    if (pJson->span != sizeof(a.bytes) - root_offset)
         exit(23);
     alignas(8) char relocated_storage[2048];
-    memcpy(relocated_storage, parsed.second, parsed.second->span);
+    memcpy(relocated_storage, pJson, pJson->span);
     const Json* relocated = (const Json*)relocated_storage;
     if ((*relocated)[0].GetLong() != 1 ||
         (*relocated)[1][1].GetLong() != 3 ||
         (*relocated)[2]["x"].GetLong() != 4 ||
         strcmp((*relocated)[2]["s"].GetString(), "ok"))
         exit(43);
-    const char* output = parsed.second->ToString(a);
+    const char* output;
+    if (pJson->ToString(a, &output) != Json::SUCCESS)
+        exit(24);
     if (strcmp(output, R"([1,[2,3],{"x":4,"s":"ok"}])"))
         exit(24);
-    if (output < a.bytes || output >= (const char*)parsed.second)
+    if (output < a.bytes || output >= (const char*)pJson)
         exit(25);
-    if (Json::Parse(a, "[1,").first != Json::MALFORMED ||
-        (*parsed.second)[2]["x"].GetLong() != 4)
+    const Json* pMalformed;
+    if (Json::Parse("[1,", a, &pMalformed) != Json::MALFORMED ||
+        (*pJson)[2]["x"].GetLong() != 4)
         exit(26);
 }
 
@@ -325,11 +363,14 @@ void
 deep_test()
 {
     flat::FixedArena<8192> a;
-    const char* text = flat::WriteJson(
-      flat::JsonObject({ { "content",
-                           flat::JsonArray({ flat::JsonArray({ flat::JsonArray(
-                         { 0, 10, 20, 3.14, 40 }) }) }) } }),
-      a);
+    const char* text;
+    if (flat::WriteJson(
+          flat::JsonObject({ { "content",
+                               flat::JsonArray({ flat::JsonArray({ flat::JsonArray(
+                             { 0, 10, 20, 3.14, 40 }) }) }) } }),
+          a,
+          &text) != Json::SUCCESS)
+        exit(2);
     if (strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
         exit(2);
 }
@@ -340,17 +381,21 @@ void
 static_arena_test()
 {
     flat::ArenaBuffer a = g_static_arena;
-    const char* text = flat::WriteJson(
-      flat::JsonObject({ { "name", "static" },
-                         { "values", flat::JsonArray({ 1, 2 }) } }),
-      a);
+    const char* text;
+    if (flat::WriteJson(
+          flat::JsonObject({ { "name", "static" },
+                             { "values", flat::JsonArray({ 1, 2 }) } }),
+          a,
+          &text) != Json::SUCCESS)
+        exit(8);
     if (strcmp(text, "{\"name\":\"static\",\"values\":[1,2]}"))
         exit(8);
-    std::pair<Json::Status, const Json*> res =
-      Json::Parse(a, "{\"k\": [true, null, 3.5]}");
-    if (res.first != Json::SUCCESS)
+    const Json* pJson;
+    Json::Status status = Json::Parse("{\"k\": [true, null, 3.5]}", a, &pJson);
+    if (status != Json::SUCCESS)
         exit(9);
-    if (strcmp(res.second->ToString(a), "{\"k\":[true,null,3.5]}"))
+    if (pJson->ToString(a, &text) != Json::SUCCESS ||
+        strcmp(text, "{\"k\":[true,null,3.5]}"))
         exit(13);
 }
 
@@ -358,13 +403,15 @@ void
 stack_arena_test()
 {
     flat::FixedArena<16384> a;
-    std::pair<Json::Status, const Json*> res =
-      Json::Parse(a, "[1, \"two\", {\"three\": 3}]");
-    if (res.first != Json::SUCCESS)
+    const Json* pJson;
+    Json::Status status = Json::Parse("[1, \"two\", {\"three\": 3}]", a, &pJson);
+    if (status != Json::SUCCESS)
         exit(14);
-    if (strcmp(res.second->ToString(a), "[1,\"two\",{\"three\":3}]"))
+    const char* text;
+    if (pJson->ToString(a, &text) != Json::SUCCESS ||
+        strcmp(text, "[1,\"two\",{\"three\":3}]"))
         exit(15);
-    if (strcmp((*res.second)[1].GetString(), "two"))
+    if (strcmp((*pJson)[1].GetString(), "two"))
         exit(16);
 }
 
@@ -372,19 +419,26 @@ void
 parse_test()
 {
     flat::FixedArena<65536> a;
-    std::pair<Json::Status, const Json*> res =
-      Json::Parse(a, "{ \"content\":[[[0,10,20,3.14,40]]]}");
-    if (res.first != Json::SUCCESS)
+    const Json* pJson;
+    Json::Status status = Json::Parse("{ \"content\":[[[0,10,20,3.14,40]]]}", a, &pJson);
+    if (status != Json::SUCCESS)
         exit(3);
-    if (strcmp(res.second->ToString(a), "{\"content\":[[[0,10,20,3.14,40]]]}"))
+    const char* text;
+    if (pJson->ToString(a, &text) != Json::SUCCESS ||
+        strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
         exit(4);
-    if (strcmp(res.second->ToStringPretty(a),
+    if (pJson->ToStringPretty(a, &text) != Json::SUCCESS ||
+        strcmp(text,
                R"({"content": [[[0, 10, 20, 3.14, 40]]]})"))
         exit(5);
-    res = Json::Parse(a, "{ \"a\": 1, \"b\": [2,   3]}");
-    if (strcmp(res.second->ToString(a), R"({"a":1,"b":[2,3]})"))
+    status = Json::Parse("{ \"a\": 1, \"b\": [2,   3]}", a, &pJson);
+    if (status != Json::SUCCESS)
         exit(6);
-    if (strcmp(res.second->ToStringPretty(a),
+    if (pJson->ToString(a, &text) != Json::SUCCESS ||
+        strcmp(text, R"({"a":1,"b":[2,3]})"))
+        exit(6);
+    if (pJson->ToStringPretty(a, &text) != Json::SUCCESS ||
+        strcmp(text,
                R"({
   "a": 1,
   "b": [2, 3]
@@ -588,17 +642,19 @@ round_trip_test()
 {
     for (size_t i = 0; i < ARRAYLEN(kRoundTrip); ++i) {
         flat::FixedArena<65536> a;
-        std::pair<Json::Status, const Json*> res =
-          Json::Parse(a, kRoundTrip[i].before, strlen(kRoundTrip[i].before));
-        if (res.first != Json::SUCCESS) {
+        const Json* pJson;
+        Json::Status status = Json::Parse(kRoundTrip[i].before, strlen(kRoundTrip[i].before), a, &pJson);
+        if (status != Json::SUCCESS) {
             printf(
               "error: Json::Parse returned Json::%s but wanted Json::%s: %s\n",
-              Json::StatusToString(res.first),
+              Json::StatusToString(status),
               Json::StatusToString(Json::SUCCESS),
               kRoundTrip[i].before);
             exit(10);
         }
-        const char* got = res.second->ToString(a);
+        const char* got;
+        if (pJson->ToString(a, &got) != Json::SUCCESS)
+            exit(11);
         if (strcmp(got, kRoundTrip[i].after)) {
             printf("error: Json::Parse(%s).ToString() was %s but should have "
                    "been %s\n",
@@ -615,15 +671,16 @@ json_test_suite()
 {
     for (size_t i = 0; i < ARRAYLEN(kJsonTestSuite); ++i) {
         flat::FixedArena<65536> a;
-        std::pair<Json::Status, const Json*> res =
-          Json::Parse(a,
-                      kJsonTestSuite[i].json,
-                      kJsonTestSuite[i].size ? kJsonTestSuite[i].size
-                                             : strlen(kJsonTestSuite[i].json));
-        if (res.first != kJsonTestSuite[i].error) {
+        const Json* pJson;
+        Json::Status status = Json::Parse(
+          kJsonTestSuite[i].json,
+          kJsonTestSuite[i].size ? kJsonTestSuite[i].size : strlen(kJsonTestSuite[i].json),
+          a,
+          &pJson);
+        if (status != kJsonTestSuite[i].error) {
             printf(
               "error: Json::Parse returned Json::%s but wanted Json::%s: %s\n",
-              Json::StatusToString(res.first),
+              Json::StatusToString(status),
               Json::StatusToString(kJsonTestSuite[i].error),
               kJsonTestSuite[i].json);
             exit(12);
@@ -635,8 +692,12 @@ void
 afl_regression()
 {
     flat::FixedArena<65536> a;
-    Json::Parse(a, "[{\"\":1,3:14,]\n");
-    Json::Parse(a,
+    auto parse = [&](const char* pText) {
+        const Json* pJson;
+        Json::Parse(pText, strlen(pText), a, &pJson);
+    };
+    parse("[{\"\":1,3:14,]\n");
+    parse(
                 "[\n"
                 "\n"
                 "3E14,\n"
@@ -644,7 +705,7 @@ afl_regression()
                 "\n"
                 "3EL%,3E14,\n"
                 "{][1][1,,]");
-    Json::Parse(a,
+    parse(
                 "[\n"
                 "null,\n"
                 "1,\n"
@@ -652,7 +713,7 @@ afl_regression()
                 "{\"a\": \"b\",\n"
                 "3:14,ull}\n"
                 "]");
-    Json::Parse(a,
+    parse(
                 "[\n"
                 "\n"
                 "3E14,\n"
@@ -662,7 +723,7 @@ afl_regression()
                 "3[\n"
                 "\n"
                 "]");
-    Json::Parse(a,
+    parse(
                 "[\n"
                 "\n"
                 "3E14,\n"
@@ -675,14 +736,14 @@ afl_regression()
                 "3[\n"
                 "\n"
                 "]");
-    Json::Parse(a,
+    parse(
                 "[\n"
                 "\n"
                 "3E14,\n"
                 "{\"!\":4,733:4,[\n"
                 "\n"
                 "3E1%,][1,,]");
-    Json::Parse(a,
+    parse(
                 "[\n"
                 "\n"
                 "3E14,\n"
@@ -1043,12 +1104,13 @@ json_test_suite_files()
         char path[512];
         snprintf(path, sizeof(path), "%s%s", base_path, kParsingTests[i]);
         flat::MappedBuffer input(path);
-        std::pair<Json::Status, const Json*> result = Json::Parse(arena, input);
+        const Json* pJson;
+        Json::Status status = Json::Parse(input, arena, &pJson);
         const char* color = "";
         const char* reason = "";
         switch (kParsingTests[i][0]) {
             case 'y':
-                if (result.first == Json::SUCCESS) {
+                if (status == Json::SUCCESS) {
                     color = HI_GOOD;
                     reason = "PASSED";
                 } else {
@@ -1058,7 +1120,7 @@ json_test_suite_files()
                 }
                 break;
             case 'n':
-                if (result.first != Json::SUCCESS) {
+                if (status != Json::SUCCESS) {
                     color = HI_GOOD;
                     reason = "REJECTED";
                 } else {
@@ -1069,15 +1131,15 @@ json_test_suite_files()
                 break;
             case 'i':
                 color = HI_OK;
-                reason = result.first == Json::SUCCESS ? "IMPLEMENTATION_PASS"
-                                                       : "IMPLEMENTATION_FAIL";
+                reason = status == Json::SUCCESS ? "IMPLEMENTATION_PASS"
+                                                 : "IMPLEMENTATION_FAIL";
                 break;
             default:
                 JSN_PANIC("Unknown JSONTestSuite test class.");
         }
         printf("%-70s %s%s%s", kParsingTests[i], color, reason, HI_RESET);
-        if (result.first != Json::SUCCESS)
-            printf(" (%s)", Json::StatusToString(result.first));
+        if (status != Json::SUCCESS)
+            printf(" (%s)", Json::StatusToString(status));
         printf("\n");
     }
     if (failures)

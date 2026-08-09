@@ -2335,32 +2335,43 @@ struct OutputBuffer
   size_t size = 0;
   size_t capacity = 0;
   ArenaHeader* pArena = nullptr;
+  bool failed = false;
 
   explicit OutputBuffer(ArenaBuffer arena)
   {
     JSN_REQUIRE(arena.pBase, "JSON output arena cannot be null.");
     pArena = (ArenaHeader*)arena.pBase;
     size_t offset = (pArena->used + 7) & ~(size_t)7;
-    JSN_REQUIRE(offset <= pArena->back, "Arena has no room for JSON output.");
+    if (offset > pArena->back)
+      offset = pArena->back;
     pData = arena.pBase + offset;
     capacity = pArena->back - offset;
   }
 
   explicit OutputBuffer(std::span<char> output) : pData(output.data()), capacity(output.size()) {}
 
-  [[noreturn]] void Grow(size_t byteCount) { JSN_PANIC("JSON output needs %zu more bytes.", byteCount); }
+  bool ReserveBytes(size_t count)
+  {
+    if (failed)
+      return false;
+    if (count <= capacity - size)
+      return true;
+    JSN_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
+    failed = true;
+    return false;
+  }
 
   void Add(char value)
   {
-    if (size == capacity)
-      Grow(1);
+    if (!ReserveBytes(1))
+      return;
     pData[size++] = value;
   }
 
   void Append(const char* pSource, size_t count)
   {
-    if (size + count > capacity)
-      Grow(count);
+    if (!ReserveBytes(count))
+      return;
     memcpy(pData + size, pSource, count);
     size += count;
   }
@@ -2372,26 +2383,33 @@ struct OutputBuffer
 
   char* Reserve(size_t count)
   {
-    if (size + count > capacity)
-      Grow(count);
+    if (!ReserveBytes(count))
+      return nullptr;
     return pData + size;
   }
 
   void Commit(size_t count)
   {
-    if (size + count > capacity)
-      Grow(count);
+    if (!ReserveBytes(count))
+      return;
     size += count;
   }
 
-  const char* Finish(size_t* pByteCount = nullptr)
+  Json::Status Finish(size_t* pByteCount, const char** ppText)
   {
+    JSN_REQUIRE(ppText, "JSON output pointer cannot be null.");
+    *ppText = nullptr;
+    if (pByteCount)
+      *pByteCount = 0;
     Add('\0');
+    if (failed)
+      return Json::INSUFFICIENT_SPACE;
     if (pArena)
       pArena->used = (size_t)(pData - (char*)pArena) + size;
     if (pByteCount)
       *pByteCount = size;
-    return pData;
+    *ppText = pData;
+    return Json::SUCCESS;
   }
 };
 
@@ -2670,6 +2688,8 @@ static char* LongToString(char* pOutput, long long value)
 static void WriteLong(OutputBuffer& buffer, long long value)
 {
   char* pOutput = buffer.Reserve(32);
+  if (!pOutput)
+    return;
   buffer.Commit(LongToString(pOutput, value) - pOutput);
 }
 
@@ -2694,6 +2714,8 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
   // Shortest digits and all exact bignum workspace live in the uncommitted
   // arena tail. This intentionally uses one universal conversion path.
   char* pOutput = buffer.Reserve(32);
+  if (!pOutput)
+    return;
   bool negative = inspected.Sign() < 0;
   if (negative)
     value = -value;
@@ -2707,7 +2729,8 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
     std::span<char> digits(pOutput, 18);
     uintptr_t workspaceAddress = ((uintptr_t)(pOutput + 32) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
     size_t workspaceSize = 4 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
-    buffer.Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize);
+    if (!buffer.Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize))
+      return;
     double_conversion::BignumDtoa(value, single, (double_conversion::Bignum::Chunk*)workspaceAddress, digits, &length, &point);
   }
 
@@ -2880,18 +2903,18 @@ const Json& Json::operator[](std::span<const char> key) const
   JSN_PANIC("JSON object does not contain requested key.");
 }
 
-const char* Json::ToString(ArenaBuffer output) const
+Json::Status Json::ToString(ArenaBuffer output, const char** ppText) const
 {
   OutputBuffer buffer(output);
   MarshalJson(*this, buffer, false, 0);
-  return buffer.Finish();
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* Json::ToStringPretty(ArenaBuffer output) const
+Json::Status Json::ToStringPretty(ArenaBuffer output, const char** ppText) const
 {
   OutputBuffer buffer(output);
   MarshalJson(*this, buffer, true, 0);
-  return buffer.Finish();
+  return buffer.Finish(nullptr, ppText);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3133,72 +3156,77 @@ static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pret
   }
 }
 
-const char* WriteJson(const JsonValue& value, ArenaBuffer output)
+Json::Status WriteJson(const JsonValue& value, ArenaBuffer output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, false, 0);
-  return buffer.Finish();
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* WriteJsonPretty(const JsonValue& value, ArenaBuffer output)
+Json::Status WriteJsonPretty(const JsonValue& value, ArenaBuffer output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, true, 0);
-  return buffer.Finish();
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* WriteJson(const JsonValue& value, std::span<char> output, size_t* pByteCount)
+Json::Status WriteJson(const JsonValue& value, std::span<char> output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, false, 0);
-  return buffer.Finish(pByteCount);
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* WriteJsonPretty(const JsonValue& value, std::span<char> output, size_t* pByteCount)
+Json::Status WriteJsonPretty(const JsonValue& value, std::span<char> output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, true, 0);
-  return buffer.Finish(pByteCount);
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* WriteJson(const Json& value, ArenaBuffer output) { return value.ToString(output); }
+Json::Status WriteJson(const Json& value, ArenaBuffer output, const char** ppText) { return value.ToString(output, ppText); }
 
-const char* WriteJsonPretty(const Json& value, ArenaBuffer output) { return value.ToStringPretty(output); }
+Json::Status WriteJsonPretty(const Json& value, ArenaBuffer output, const char** ppText) { return value.ToStringPretty(output, ppText); }
 
-const char* WriteJson(const Json& value, std::span<char> output, size_t* pByteCount)
+Json::Status WriteJson(const Json& value, std::span<char> output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalJson(value, buffer, false, 0);
-  return buffer.Finish(pByteCount);
+  return buffer.Finish(nullptr, ppText);
 }
 
-const char* WriteJsonPretty(const Json& value, std::span<char> output, size_t* pByteCount)
+Json::Status WriteJsonPretty(const Json& value, std::span<char> output, const char** ppText)
 {
   OutputBuffer buffer(output);
   MarshalJson(value, buffer, true, 0);
-  return buffer.Finish(pByteCount);
+  return buffer.Finish(nullptr, ppText);
 }
 
 template<typename Value>
-static const char* WriteMappedJson(const Value& value, MappedBuffer& output, bool pretty)
+static Json::Status WriteMappedJson(const Value& value, MappedBuffer& output, bool pretty, const char** ppText)
 {
   JSN_REQUIRE(output.mapped && output._writable && output.cursor <= output.size,
               "MappedBuffer is not valid writable output.");
   size_t byteCount = 0;
   std::span<char> remaining((char*)output.mapped + output.cursor, output.size - output.cursor);
-  const char* pText = pretty ? WriteJsonPretty(value, remaining, &byteCount)
-                             : WriteJson(value, remaining, &byteCount);
-  output.cursor += byteCount;
-  return pText;
+  OutputBuffer buffer(remaining);
+  if constexpr (std::is_same_v<Value, JsonValue>)
+    MarshalValue(value, buffer, pretty, 0);
+  else
+    MarshalJson(value, buffer, pretty, 0);
+  Json::Status status = buffer.Finish(&byteCount, ppText);
+  if (status == Json::SUCCESS)
+    output.cursor += byteCount;
+  return status;
 }
 
-const char* WriteJson(const JsonValue& value, MappedBuffer& output) { return WriteMappedJson(value, output, false); }
+Json::Status WriteJson(const JsonValue& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, false, ppText); }
 
-const char* WriteJsonPretty(const JsonValue& value, MappedBuffer& output) { return WriteMappedJson(value, output, true); }
+Json::Status WriteJsonPretty(const JsonValue& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, true, ppText); }
 
-const char* WriteJson(const Json& value, MappedBuffer& output) { return WriteMappedJson(value, output, false); }
+Json::Status WriteJson(const Json& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, false, ppText); }
 
-const char* WriteJsonPretty(const Json& value, MappedBuffer& output) { return WriteMappedJson(value, output, true); }
+Json::Status WriteJsonPretty(const Json& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, true, ppText); }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable backward parser
@@ -3627,13 +3655,15 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
 // ParseJson
 //  Parses one bounded JSON document and rolls back on failure.
 ///////////////////////////////////////////////////////
-static std::pair<Json::Status, const Json*> ParseJson(ArenaBuffer arena, const char* pData, size_t size)
+static Json::Status ParseJson(const char* pData, size_t size, ArenaBuffer arena, const Json** ppJson)
 {
   using enum Json::Status;
   JSN_REQUIRE(arena.pBase, "JSON parse arena cannot be null.");
+  JSN_REQUIRE(ppJson, "JSON parse output pointer cannot be null.");
+  *ppJson = nullptr;
   JSN_REQUIRE(pData || !size, "JSON input cannot be null when its size is nonzero.");
   if (!pData)
-    return {ABSENT_VALUE, nullptr};
+    return ABSENT_VALUE;
 
   ArenaHeader* pHeader = (ArenaHeader*)arena.pBase;
   size_t backMark = pHeader->back;
@@ -3645,18 +3675,22 @@ static std::pair<Json::Status, const Json*> ParseJson(ArenaBuffer arena, const c
     ++pCursor;
   if (status != SUCCESS || pCursor != pEnd) {
     pHeader->back = backMark;
-    return {MALFORMED, nullptr};
+    return MALFORMED;
   }
-  return {SUCCESS, (const Json*)(arena.pBase + rootOffset)};
+  *ppJson = (const Json*)(arena.pBase + rootOffset);
+  return SUCCESS;
 }
 
-std::pair<Json::Status, const Json*> Json::Parse(ArenaBuffer arena, const char* pData, size_t size) { return ParseJson(arena, pData, size); }
+Json::Status Json::Parse(const char* pData, size_t size, ArenaBuffer arena, const Json** ppJson) { return ParseJson(pData, size, arena, ppJson); }
 
-std::pair<Json::Status, const Json*> Json::Parse(ArenaBuffer arena, const MappedBuffer& input)
+Json::Status Json::Parse(const MappedBuffer& input, ArenaBuffer arena, const Json** ppJson)
 {
-  if (!input.IsValid())
-    return {ABSENT_VALUE, nullptr};
-  return ParseJson(arena, (const char*)input.mapped, input.size);
+  JSN_REQUIRE(ppJson, "JSON parse output pointer cannot be null.");
+  if (!input.IsValid()) {
+    *ppJson = nullptr;
+    return ABSENT_VALUE;
+  }
+  return ParseJson((const char*)input.mapped, input.size, arena, ppJson);
 }
 
 const char* Json::StatusToString(Status status)
@@ -3668,8 +3702,10 @@ const char* Json::StatusToString(Status status)
     case MALFORMED:
     case ABSENT_VALUE:
       return "JSON Malformed. Cannot Parse.";
+    case INSUFFICIENT_SPACE:
+      return "JSON output buffer has insufficient space.";
     default:
-      JSN_PANIC("Unhandled JSON parse status.");
+      JSN_PANIC("Unhandled JSON status.");
   }
 }
 

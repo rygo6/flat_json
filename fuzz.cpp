@@ -48,12 +48,18 @@ main(int argc, char* argv[])
         }
     }
     flat::HeapArena a;
-    std::pair<flat::Json::Status, const flat::Json*> result =
-      flat::Json::Parse(a, s, n);
+    const flat::Json* pJson;
+    flat::Json::Status status = flat::Json::Parse(s, n, a, &pJson);
     free(s);
-    if (result.first != flat::Json::SUCCESS) {
-        puts(flat::Json::StatusToString(result.first));
+    if (status != flat::Json::SUCCESS) {
+        puts(flat::Json::StatusToString(status));
         return 1;
     }
-    puts(result.second->ToStringPretty(a));
+    const char* pText;
+    status = pJson->ToStringPretty(a, &pText);
+    if (status != flat::Json::SUCCESS) {
+        puts(flat::Json::StatusToString(status));
+        return 1;
+    }
+    puts(pText);
 }
