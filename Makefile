@@ -1,43 +1,56 @@
-CXXFLAGS = -std=c++11 -O
+CXX ?= c++
 
-check:	json_test.ok			\
-	jsontestsuite_test.ok
+UNAME_S := $(shell uname -s)
+
+CFLAT := -fno-unwind-tables			\
+	 -fno-asynchronous-unwind-tables	\
+	 -fvisibility=hidden			\
+	 -fno-math-errno			\
+	 -fno-trapping-math
+
+ifeq ($(UNAME_S),Darwin)
+LDFLAT := -nostdlib++
+else
+CFLAT += -fno-semantic-interposition
+LDFLAT := -static-libgcc -nostdlib++
+endif
+
+ifeq ($(shell $(CXX) --version 2>/dev/null | grep -ci clang),0)
+C99 := -Wno-pedantic -Wno-vla -Wno-missing-field-initializers
+else
+C99 := -Wno-c99-designator -Wno-c23-extensions -Wno-vla-cxx-extension	\
+       -Wno-address-of-temporary -Wno-missing-field-initializers
+endif
+
+CXXFLAGS = -std=c++23 -O2 -fno-exceptions -fno-rtti $(CFLAT) $(C99)
+LDFLAGS = $(LDFLAT)
+
+BIN := bin
+OBJ := $(BIN)/obj
+
+.PHONY: check clean fuzz tests
+.SECONDARY: $(OBJ)/fuzz.o $(OBJ)/tests.o
+
+check: $(BIN)/tests.ok
 
 clean:
-	rm -f *.o *.a *.ok *_test *.elf *.dbg
-	rm -rf .aarch64
+	rm -rf ./bin
 
-json.o: json.cpp json.h
+fuzz: $(BIN)/fuzz
+tests: $(BIN)/tests
 
-fuzz.o: fuzz.cpp json.h
-fuzz: fuzz.o json.o double-conversion.a
+$(BIN) $(OBJ):
+	mkdir -p $@
 
-json_test.o: json_test.cpp json.h
-json_test: json_test.o json.o double-conversion.a
+$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp jtckdint.h | $(OBJ)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
-jsontestsuite_test.o: jsontestsuite_test.cpp json.h
-jsontestsuite_test: jsontestsuite_test.o json.o double-conversion.a
+$(OBJ)/%.o: %.cpp flat_json.hpp | $(OBJ)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
-%: %.o
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) $(OUTPUT_OPTION) $^
+$(BIN)/%: $(OBJ)/%.o $(OBJ)/flat_json.o | $(BIN)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) -o $@ $^
 
-%.ok: %
+$(BIN)/%.ok: $(BIN)/%
 	./$<
 	touch $@
-
-################################################################################
-# double-conversion
-
-double-conversion.a:			\
-		bignum.o		\
-		bignum-dtoa.o		\
-		cached-powers.o		\
-		double-to-string.o	\
-		fast-dtoa.o		\
-		fixed-dtoa.o		\
-		string-to-double.o	\
-		strtod.o
-	$(AR) rcs $@ $^
-
-%.o: double-conversion/%.cc
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c $<

@@ -1,60 +1,237 @@
 # JSON for Classic C++
 
-json.cpp is a baroque JSON parsing / serialization library for C++.
+flat_json is a baroque JSON parsing / serialization library for C++.
 
 This project is a reaction against <https://github.com/nlohmann/json/>
 which provides a modern C++ library for JSON. Our alternative:
 
 - **Goes 2x-3x faster**. With `gcc -O3` 13.2 on Ubuntu 24.04 using an
   AMD Ryzen Threadripper PRO 7995WX this library was able to parse the
-  complicated JSON example in [json\_test.cpp](json_test.cpp) 3x faster
+  complicated JSON example in [tests.cpp](tests.cpp) 3x faster
   than nlohmann's library.
 
-- **Compiles 10x faster**. An object that does nothing with JSON except
-  calling `nlohmann::ordered_json::parse` will take at minimum 1200 ms
-  to compile. This is an unacceptably slow minimum overhead. With this
-  project, you're instead looking at about 120 ms, and nearly all of
-  that overhead is due our dependency on `<string>`, `<map>`, and
-  `<vector>`.
+- **Keeps compile-time machinery small**. The public API does not depend on
+  `std::string`, `std::map`, or `std::vector`, and it avoids a large
+  header-only JSON template implementation.
 
-- **Has 10x less code**. nlohmann's json.h has 24,766 lines of code. Our
-  json.h has 233 lines of code, and our json.cpp file has 1,303 lines.
-  This makes our implementation more hackable and easily customizable.
-  It's much more restrained when it comes to C++ language feature usage.
-  You can easily reason about the behavior of this library and determine
-  if it meets the requirements of your production environment.
+- **Keeps the JSON implementation compact**. The project-specific parser,
+  arena, and writer remain small enough to audit. `flat_json.cpp` also contains an
+  explicitly marked amalgamation of Google's double-conversion implementation,
+  so its raw line count includes that third-party component.
 
-- **Better JSONTestSuite conformance**. Our JSON parser passes all the
-  test cases from <https://github.com/nst/JSONTestSuite/>. However
-  nlohmann's json library doesn't fully pass.
+- **Strict JSONTestSuite conformance**. The parser accepts every required
+  `y_` case and rejects every required `n_` case in the vendored
+  <https://github.com/nst/JSONTestSuite/> corpus. Results for the optional
+  implementation-defined `i_` cases are recorded below.
 
-To use this library, you need three things. First, you need json.h.
-Secondly, you need json.cpp. Thirdly, you need Google's outstanding
-double-conversion library.
+To build this library from source, you need `flat_json.hpp`, `flat_json.cpp`, and
+`jtckdint.h`.
+The required parts of Google's double-conversion library are amalgamated into
+`flat_json.cpp`; no separate double-conversion build or installation is required.
+The library targets 64-bit ARM (`arm64`/`aarch64`) and x86-64 only; 32-bit and
+other architectures are rejected at compile time.
 
-We like double-conversion because it has a really good method for
-serializing 32-bit floating point numbers. This is useful if you're
-building something like an HTTP server that serves embeddings. With
-other JSON serializers that depend only on the C library and STL, floats
-are upcast to double so you'd be sending big ugly arrays like
-`[0.2893893899832212, ...]` which doesn't make sense, because most of
-those bits are made up, since a float32 can't hold that much precision.
-But with this library, the `Json` object will remember that you passed
-it a float, and then serialize it as such when you call `toString()`,
-thus allowing for more efficient readable responses.
+## Arena API
+
+Parsed documents are immutable. Parsing packs the tree backward from the end
+of one caller-owned arena and returns a `const Json*` pointing directly at the
+root record. There is no document wrapper. Every child, index, key, and string
+offset is relative to the record that contains it, so recursive access needs no
+arena pointer and the packed subtree can be relocated as one byte range. Arrays
+contain exact-sized offset tables, so indexed access remains O(1).
+
+JSON serialization grows forward from the beginning of an output arena.
+Decimal digits and exact-conversion workspace live in unused output space, so
+neither parsing nor serialization allocates an intermediary or heap buffer.
+
+```cpp
+flat::FixedArena<4096> arena;
+
+auto [status, pDocument] = flat::Json::Parse(
+    arena, R"({"values":[1,2,3]})");
+if (status == flat::Json::SUCCESS) {
+    long long second = (*pDocument)["values"][1].GetLong();
+    const char* text = flat::WriteJson(*pDocument, arena);
+}
+```
+
+### Read arrays and objects
+
+An array or object is already represented by its `Json` node. `GetArray()` and
+`GetObject()` validate the node type and return that same node; `GetSize()`
+returns the element or member count. Array indexing and object-key lookup remain
+on `Json`:
+
+```cpp
+const flat::Json& root = pDocument->GetObject();
+const flat::Json& values = root["values"].GetArray();
+
+for (size_t i = 0; i < values.GetSize(); ++i) {
+    double value = values[i].GetNumber();
+}
+
+if (root.Contains("settings")) {
+    const flat::Json& settings = root["settings"].GetObject();
+    if (settings.Contains("enabled")) {
+        bool enabled = settings["enabled"].GetBool();
+    }
+}
+```
+
+Internally, an array has an exact-sized table of relative child offsets, and an
+object has a table of hashed keys and relative value offsets. Those packed index
+records provide O(1) array access and object lookup metadata; they are storage
+details in `flat_json.cpp`, not values returned by the public API.
+
+Outgoing JSON can also be written directly from temporary initializer-list
+expressions. The expression is non-owning and must be consumed in the same full
+expression.
+
+```cpp
+const char* text = flat::WriteJson(
+    flat::JsonObject({
+        {"model", "gpt-5"},
+        {"stream", true},
+        {"messages", flat::JsonArray({
+            flat::JsonObject({
+                {"role", "user"},
+                {"content", "Hello"},
+            }),
+        })},
+    }),
+    arena);
+```
+
+`MappedBuffer` can wrap caller-owned mapped memory or own a file mapping.
+`WriteJson` writes at its current cursor without an arena or intermediary
+allocation, then advances the cursor by the JSON byte count including its null
+terminator. Wrapping existing memory does not transfer ownership:
+
+```cpp
+char bytes[4096];
+flat::MappedBuffer mappedBuffer(bytes, sizeof(bytes));
+
+const char* text = flat::WriteJson(
+    flat::JsonObject({
+        {"model", "gpt-5"},
+        {"stream", true},
+        {"messages", flat::JsonArray({
+            flat::JsonObject({
+                {"role", "user"},
+                {"content", "Hello"},
+            }),
+        })},
+    }),
+    mappedBuffer);
+```
+
+### Read mapped JSON back immediately
+
+Save the cursor before writing. The returned pointer is the beginning of the
+JSON text, and the cursor difference gives its bounded length without calling
+`strlen`. Subtract one because `WriteJson` includes a trailing null byte in the
+claimed mapped-buffer range.
+
+```cpp
+size_t textOffset = (size_t)mappedBuffer.cursor;
+
+const char* pText = flat::WriteJson(
+    flat::JsonObject({
+        {"model", "gpt-5"},
+        {"messages", flat::JsonArray({
+            flat::JsonObject({
+                {"role", "user"},
+                {"content", "Hello"},
+            }),
+        })},
+    }),
+    mappedBuffer);
+
+size_t textSize = (size_t)mappedBuffer.cursor - textOffset - 1;
+
+flat::FixedArena<4096> parseArena;
+auto [status, pJson] = flat::Json::Parse(parseArena, pText, textSize);
+if (status == flat::Json::SUCCESS) {
+    const char* pModel = (*pJson)["model"].GetString();
+    const char* pContent = (*pJson)["messages"][0]["content"].GetString();
+}
+```
+
+`pText` remains valid only while the underlying mapping remains valid. The
+parsed `Json` tree and its strings are copied into `parseArena`, so `pJson`
+remains valid until that arena is reset or destroyed.
+
+### Round-trip a file-backed mapping
+
+The writable constructor opens, sizes, and memory-maps the file. Its destructor
+synchronously flushes the written range, removes the trailing in-memory null
+terminator from the file size, unmaps the memory, and closes the file.
+
+```cpp
+constexpr size_t FileCapacity = 64 * 1024;
+{
+    flat::MappedBuffer output("request.json", FileCapacity);
+    if (!output.IsValid())
+        return false;
+
+    flat::WriteJson(
+        flat::JsonObject({
+            {"model", "gpt-5"},
+            {"stream", true},
+            {"messages", flat::JsonArray({
+                flat::JsonObject({
+                    {"role", "user"},
+                    {"content", "Hello"},
+                }),
+            })},
+        }),
+        output);
+}
+```
+
+The read-only constructor can be passed directly to `Parse()`. The temporary
+mapping remains alive for the call, then immediately unmaps and closes. This is
+safe because parsing copies the immutable tree and strings into `parseArena`:
+
+```cpp
+flat::FixedArena<64 * 1024> parseArena;
+auto [status, pJson] = flat::Json::Parse(parseArena, flat::MappedBuffer("request.json"));
+if (status == flat::Json::SUCCESS) {
+    const flat::Json& root = pJson->GetObject();
+    const char* pModel = root["model"].GetString();
+    bool stream = root["stream"].GetBool();
+    const flat::Json& messages = root["messages"].GetArray();
+    const char* pContent = messages[0].GetObject()["content"].GetString();
+}
+```
+
+The embedded double-conversion code emits the shortest round-trippable decimal
+form for both `float` and `double`. `JsonValue` preserves whether an initializer
+was a `float`, so `WriteJson` does not first widen it and print irrelevant
+double-precision digits. This is useful for large embedding arrays.
+
+## Embedded third-party code
+
+The section labeled `Embedded google/double-conversion` in `flat_json.cpp` comes
+from [google/double-conversion](https://github.com/google/double-conversion),
+pinned to commit `75b48d66ac835da2c1678926f7d61d6cb2992922` dated
+2024-05-21. It is licensed under BSD-3-Clause. The full copyright notice,
+conditions, and disclaimer appear directly above the amalgamated code in
+`flat_json.cpp` and in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The amalgamated section records the local changes retained by this repository.
+The rest of this project remains under the license in the repository-level
+`LICENSE` file.
 
 ## Benchmark Results
 
-Here are some quick and dirty tests for parsing and serialization. The
-lower numbers are better. See [json\_test.cpp](json_test.cpp) and
-[nlohmann/json\_test.cpp](nlohmann/json_test.cpp). Please note that the
-`json_test_suite()` function was modified locally to only include the
-successful test cases, in the hope of controlling for differences in
-exception handling. The test, as written, actually reports a 39x (rather
-than 3x) advantage, which we haven't figured out how to explain yet.
+This is a historical benchmark snapshot; results depend on the compiler and
+machine. Lower numbers are better. See [tests.cpp](tests.cpp) and
+[nlohmann/json\_test.cpp](nlohmann/json_test.cpp). The benchmark's
+`json_test_suite()` input set includes only cases both libraries accept.
 
 ```
-    # json.cpp
+    # flat_json
         71 ns 2000x object_test()
        226 ns 2000x deep_test()
        675 ns 2000x parse_test()
@@ -69,139 +246,37 @@ than 3x) advantage, which we haven't figured out how to explain yet.
       16617 ns 2000x json_test_suite()
 ```
 
-## Usage Example
+## Current Verification Results
 
-The [llamafile](https://github.com/Mozilla-Ocho/llamafile) project uses
-this JSON library. Here are some excerpts from its OpenAI API compatible
-`/v1/chat/completions` endpoint.
+Last verified 2026-08-08 on macOS ARM64 with Apple Clang 17.0.0.
 
-Here's the code where it parses the incoming HTTP body and validates it.
+| Check | Current result |
+| --- | --- |
+| Native unit and round-trip tests | Passed on ARM64 |
+| JSONTestSuite | Accepted 95/95 required `y_` cases; rejected 188/188 required `n_` cases; recorded all 35 implementation-defined `i_` cases |
+| README classification audit | All 318 detailed classifications below match the current runner |
+| Native fuzz regression corpus | 2,304/2,304 inputs completed without a crash |
+| UBSan unit tests and fuzz corpus | Unit tests passed; 2,304/2,304 fuzz inputs completed without undefined-behavior or crash failures |
+| x86-64 build and unit tests | Passed under Rosetta on the ARM64 host |
+| CMake/CTest | 1/1 consolidated test passed |
+| Warning-clean build | `flat_json.cpp` compiled with `-Wall -Wextra -Werror` |
 
-```cpp
-    // object<model, messages, ...>
-    auto [status, json] = jt::Json::parse(std::string(payload_));
-    if (status != jt::Json::success)
-        return send_error(400, jt::Json::StatusToString(status));
-    if (!json.isObject())
-        return send_error(400, "JSON body must be an object");
+The fuzz count is a replay of the repository's `fuzzies/` regression corpus,
+not a claim of exhaustive coverage-guided fuzzing. For an individual fuzz
+input, exit code 0 means the parser accepted it and exit code 1 means it
+rejected it; either is expected. A signal, sanitizer report, or exit code above
+1 is treated as a failure.
 
-    // fields openai documents that we don't support yet
-    if (json.contains("tools"))
-        return send_error(400, "OpenAI tools field not supported yet");
-    if (json.contains("audio"))
-        return send_error(400, "OpenAI audio field not supported yet");
+Build and run the native suites with:
 
-    // model: string
-    jt::Json& model = json["model"];
-    if (!model.isString())
-        return send_error(400, "JSON missing model string");
-    params->model = model.getString();
-
-    // messages: array<object<role:string, content:string>>
-    if (!json["messages"].isArray())
-        return send_error(400, "JSON missing messages array");
-    std::vector<Json>& messages = json["messages"].getArray();
-    if (messages.empty())
-        return send_error(400, "JSON messages array is empty");
-    for (Json& message : messages) {
-        if (!message.isObject())
-            return send_error(400, "messages array must hold objects");
-        if (!message["role"].isString())
-            return send_error(400, "message must have string role");
-        if (!is_legal_role(message["role"].getString()))
-            return send_error(400, "message role not system user assistant");
-        if (!message["content"].isString())
-            return send_error(400, "message must have string content");
-        params->messages.emplace_back(message["role"].getString(),
-                                      message["content"].getString());
-    }
-
-    // ...
+```sh
+make check fuzz
+./bin/tests
 ```
-
-Here's the code where it sends a response.
-
-```cpp
-struct V1ChatCompletionResponse
-{
-    std::string content;
-    jt::Json json;
-};
-
-bool
-Client::v1_chat_completions()
-{
-    // ...
-
-    V1ChatCompletionResponse* response = new V1ChatCompletionResponse;
-    defer_cleanup(cleanup_response, response);
-
-    // ...
-
-    // setup response json
-    response->json["id"] = generate_id();
-    response->json["object"] = "chat.completion";
-    response->json["model"] = params->model;
-    response->json["system_fingerprint"] = slot_->system_fingerprint_;
-    Json& choice = response->json["choices"][0];
-    choice["index"] = 0;
-    choice["logprobs"] = nullptr;
-    choice["finish_reason"] = nullptr;
-
-    // initialize response
-    if (params->stream) {
-        char* p = append_http_response_message(obuf_.p, 200);
-        p = stpcpy(p, "Content-Type: text/event-stream\r\n");
-        if (!send_response_start(obuf_.p, p))
-            return false;
-        choice["delta"]["role"] = "assistant";
-        choice["delta"]["content"] = "";
-        response->json["created"] = timespec_real().tv_sec;
-        response->content = make_event(response->json);
-        choice.getObject().erase("delta");
-        if (!send_response_chunk(response->content))
-            return false;
-    }
-
-    // prediction time
-    int completion_tokens = 0;
-    const char* finish_reason = "length";
-    for (;;) {
-        // do token generation ...
-    }
-    choice["finish_reason"] = finish_reason;
-
-    // finalize response
-    cleanup_slot(this);
-    if (params->stream) {
-        choice["delta"]["content"] = "";
-        response->json["created"] = timespec_real().tv_sec;
-        response->content = make_event(response->json);
-        choice.getObject().erase("delta");
-        if (!send_response_chunk(response->content))
-            return false;
-        return send_response_finish();
-    } else {
-        Json& usage = response->json["usage"];
-        usage["prompt_tokens"] = prompt_tokens;
-        usage["completion_tokens"] = completion_tokens;
-        usage["total_tokens"] = completion_tokens + prompt_tokens;
-        choice["message"]["role"] = "assistant";
-        choice["message"]["content"] = std::move(response->content);
-        response->json["created"] = timespec_real().tv_sec;
-        char* p = append_http_response_message(obuf_.p, 200);
-        p = stpcpy(p, "Content-Type: application/json\r\n");
-        response->content = response->json.toStringPretty();
-        response->content += '\n';
-        return send_response(obuf_.p, p, response->content);
-    }
-```
-
-See also <https://github.com/Mozilla-Ocho/llamafile/blob/main/llamafile/server/v1_chat_completions.cpp>
 
 ## JSONTestSuite Results
 
-Here's the results of running `jsontestsuite_test` for json.cpp.
+Here's the JSONTestSuite portion of `tests` for flat_json.
 
 ### Undefined test cases
 
@@ -550,4 +625,4 @@ Venkatasubramanian. It was originally written in C for Lua in
 <https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c> for
 the original source code. In 2024 Mozilla sponsored converting the
 Redbean JSON library to C++ for
-[llamafile](https://github.com/Mozilla-Ocho/llamafile).
+[llamafile](https://github.com/mozilla-ai/llamafile).
