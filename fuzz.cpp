@@ -15,22 +15,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "json.h"
+#include "flat_json.hpp"
 
-#include <cstdio>
-#include <string>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void*
+xmalloc(size_t size)
+{
+    void* result = malloc(size);
+    if (!result)
+        abort();
+    return result;
+}
 
 int
 main(int argc, char* argv[])
 {
-    int c;
-    std::string s;
-    while ((c = fgetc(stdin)) != EOF)
-        s += c;
-    std::pair<Json::Status, Json> result = Json::parse(s);
-    if (result.first != Json::success) {
-        puts(Json::StatusToString(result.first));
+    size_t n = 0;
+    size_t c = 4096;
+    char* s = (char*)xmalloc(c);
+    size_t got;
+    while ((got = fread(s + n, 1, c - n, stdin)) > 0) {
+        n += got;
+        if (n == c) {
+            c *= 2;
+            char* s2 = (char*)xmalloc(c);
+            memcpy(s2, s, n);
+            free(s);
+            s = s2;
+        }
+    }
+    flat::HeapArena a;
+    std::pair<flat::Json::Status, const flat::Json*> result =
+      flat::Json::Parse(a, s, n);
+    free(s);
+    if (result.first != flat::Json::SUCCESS) {
+        puts(flat::Json::StatusToString(result.first));
         return 1;
     }
-    puts(result.second.toStringPretty().c_str());
+    puts(result.second->ToStringPretty(a));
 }
