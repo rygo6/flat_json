@@ -33,7 +33,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <utility>
 
 #ifndef JSN_INFO
 #define JSN_INFO(format, ...) fprintf(stderr, __FILE__ ":%-*d[JSN] "       format, (int)(20 - sizeof(__FILE__)), __LINE__ __VA_OPT__(,) __VA_ARGS__)
@@ -169,7 +168,8 @@ struct Json
   {
     SUCCESS,
     MALFORMED,
-    ABSENT_VALUE
+    ABSENT_VALUE,
+    INSUFFICIENT_SPACE,
   };
 
   Type type;
@@ -211,8 +211,8 @@ struct Json
 
   template<size_t Size> bool Contains(const char (&key)[Size]) const { return Contains(std::span<const char>(key, Size - 1)); }
 
-  const char* ToString(ArenaBuffer output) const;
-  const char* ToStringPretty(ArenaBuffer output) const;
+  Status ToString(ArenaBuffer output, const char** ppText) const;
+  Status ToStringPretty(ArenaBuffer output, const char** ppText) const;
 
   const Json& operator[](size_t index) const;
   const Json& operator[](std::span<const char> key) const;
@@ -222,12 +222,12 @@ struct Json
   const Json& operator[](int index) const { JSN_REQUIRE(index >= 0, "JSON index is negative."); return (*this)[(size_t)index]; }
 
   static const char* StatusToString(Status status);
-  static std::pair<Status, const Json*> Parse(ArenaBuffer arena, const char* pData, size_t size);
-  static std::pair<Status, const Json*> Parse(ArenaBuffer arena, const MappedBuffer& input);
+  static Status Parse(const char* pData, size_t size, ArenaBuffer arena, const Json** ppJson);
+  static Status Parse(const MappedBuffer& input, ArenaBuffer arena, const Json** ppJson);
 
-  static std::pair<Status, const Json*> Parse(ArenaBuffer arena, std::span<const char> data) { return Parse(arena, data.data(), data.size()); }
+  static Status Parse(std::span<const char> data, ArenaBuffer arena, const Json** ppJson) { return Parse(data.data(), data.size(), arena, ppJson); }
 
-  template<size_t Size> static std::pair<Status, const Json*> Parse(ArenaBuffer arena, const char (&text)[Size]) { return Parse(arena, text, Size - 1); }
+  template<size_t Size> static Status Parse(const char (&text)[Size], ArenaBuffer arena, const Json** ppJson) { return Parse(text, Size - 1, arena, ppJson); }
 
 };
 
@@ -332,19 +332,19 @@ inline JsonValue::JsonValue(JsonObjectValue value) : type(TYPE_OBJECT), listValu
 inline JsonArrayValue JsonArray(std::initializer_list<JsonValue>&& values) { return {std::span<const JsonValue>(values.begin(), values.size())}; }
 inline JsonObjectValue JsonObject(std::initializer_list<JsonMember>&& members) { return {std::span<const JsonMember>(members.begin(), members.size())}; }
 
-const char* WriteJson(const JsonValue& value, ArenaBuffer output);
-const char* WriteJsonPretty(const JsonValue& value, ArenaBuffer output);
-const char* WriteJson(const JsonValue& value, std::span<char> output, size_t* pByteCount);
-const char* WriteJsonPretty(const JsonValue& value, std::span<char> output, size_t* pByteCount);
-const char* WriteJson(const JsonValue& value, MappedBuffer& output);
-const char* WriteJsonPretty(const JsonValue& value, MappedBuffer& output);
+Json::Status WriteJson(const JsonValue& value, ArenaBuffer output, const char** ppText);
+Json::Status WriteJsonPretty(const JsonValue& value, ArenaBuffer output, const char** ppText);
+Json::Status WriteJson(const JsonValue& value, std::span<char> output, const char** ppText);
+Json::Status WriteJsonPretty(const JsonValue& value, std::span<char> output, const char** ppText);
+Json::Status WriteJson(const JsonValue& value, MappedBuffer& output, const char** ppText);
+Json::Status WriteJsonPretty(const JsonValue& value, MappedBuffer& output, const char** ppText);
 
-const char* WriteJson(const Json& value, ArenaBuffer output);
-const char* WriteJsonPretty(const Json& value, ArenaBuffer output);
-const char* WriteJson(const Json& value, std::span<char> output, size_t* pByteCount);
-const char* WriteJsonPretty(const Json& value, std::span<char> output, size_t* pByteCount);
-const char* WriteJson(const Json& value, MappedBuffer& output);
-const char* WriteJsonPretty(const Json& value, MappedBuffer& output);
+Json::Status WriteJson(const Json& value, ArenaBuffer output, const char** ppText);
+Json::Status WriteJsonPretty(const Json& value, ArenaBuffer output, const char** ppText);
+Json::Status WriteJson(const Json& value, std::span<char> output, const char** ppText);
+Json::Status WriteJsonPretty(const Json& value, std::span<char> output, const char** ppText);
+Json::Status WriteJson(const Json& value, MappedBuffer& output, const char** ppText);
+Json::Status WriteJsonPretty(const Json& value, MappedBuffer& output, const char** ppText);
 
 ////////////////////////////////////////////////////////////////////////////////
 }  // namespace flat

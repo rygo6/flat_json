@@ -1,44 +1,46 @@
-# JSON for Classic C++
+# Flat C++ JSON
 
-flat_json is a baroque JSON parsing / serialization library for C++.
+`flat_json` is a JSON library written in Flat C++ style. It parses JSON into
+one caller-owned, immutable flattened arena buffer containing the root, values,
+indexes, keys, and strings. There is no heap-allocated object tree and no
+document wrapper: on success, `Parse` fills a caller-provided `const Json*`
+that points directly into the arena.
 
-This project is a reaction against <https://github.com/nlohmann/json/>
-which provides a modern C++ library for JSON. Our alternative:
+It also writes JSON directly to an arena, span, or mapped buffer from nested
+`JsonObject`, `JsonArray`, and `JsonValue` initializer expressions. The writer
+consumes those temporary values immediately and does not build an intermediate
+JSON tree.
 
-- **Goes 2x-3x faster**. With `gcc -O3` 13.2 on Ubuntu 24.04 using an
-  AMD Ryzen Threadripper PRO 7995WX this library was able to parse the
-  complicated JSON example in [tests.cpp](tests.cpp) 3x faster
-  than nlohmann's library.
+## Credits
 
-- **Keeps compile-time machinery small**. The public API does not depend on
-  `std::string`, `std::map`, or `std::vector`, and it avoids a large
-  header-only JSON template implementation.
+Flat C++ JSON is derived from [jart/json.cpp](https://github.com/jart/json.cpp),
+the C++ JSON library published by Justine Tunney and contributors with Mozilla
+sponsorship in 2024. That implementation was itself ported from Cosmopolitan's
+[`tool/net/ljson.c`](https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c),
+written by Justine Tunney and Gautham Venkatasubramanian in 2022.
 
-- **Keeps the JSON implementation compact**. The project-specific parser,
-  arena, and writer remain small enough to audit. `flat_json.cpp` also contains an
-  explicitly marked amalgamation of Google's double-conversion implementation,
-  so its raw line count includes that third-party component.
+The checked-in integer arithmetic helper comes from
+[jart/jtckdint](https://github.com/jart/jtckdint). Complete copyright,
+provenance, and license text is preserved in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-- **Strict JSONTestSuite conformance**. The parser accepts every required
-  `y_` case and rejects every required `n_` case in the vendored
-  <https://github.com/nst/JSONTestSuite/> corpus. Results for the optional
-  implementation-defined `i_` cases are recorded below.
-
-To build this library from source, you need `flat_json.hpp`, `flat_json.cpp`, and
-`jtckdint.h`.
-The required parts of Google's double-conversion library are amalgamated into
-`flat_json.cpp`; no separate double-conversion build or installation is required.
-The library targets 64-bit ARM (`arm64`/`aarch64`) and x86-64 only; 32-bit and
-other architectures are rejected at compile time.
+Floating-point parsing and formatting use the required subset of
+[google/double-conversion](https://github.com/google/double-conversion), pinned
+to commit
+[`75b48d66ac835da2c1678926f7d61d6cb2992922`](https://github.com/google/double-conversion/commit/75b48d66ac835da2c1678926f7d61d6cb2992922).
+That subset was amalgamated into `flat_json.cpp` and adapted to operate in the
+flat arena without a separate heap or intermediary conversion buffer. Its
+BSD-3-Clause license is reproduced in `flat_json.cpp` and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Arena API
 
 Parsed documents are immutable. Parsing packs the tree backward from the end
-of one caller-owned arena and returns a `const Json*` pointing directly at the
-root record. There is no document wrapper. Every child, index, key, and string
-offset is relative to the record that contains it, so recursive access needs no
-arena pointer and the packed subtree can be relocated as one byte range. Arrays
-contain exact-sized offset tables, so indexed access remains O(1).
+of one caller-owned arena and fills a `const Json*` output pointing directly at
+the root record. There is no document wrapper. Every child, index, key, and
+string offset is relative to the record that contains it, so recursive access
+needs no arena pointer and the packed subtree can be relocated as one byte
+range. Arrays contain exact-sized offset tables, so indexed access remains O(1).
 
 JSON serialization grows forward from the beginning of an output arena.
 Decimal digits and exact-conversion workspace live in unused output space, so
@@ -47,13 +49,67 @@ neither parsing nor serialization allocates an intermediary or heap buffer.
 ```cpp
 flat::FixedArena<4096> arena;
 
-auto [status, pDocument] = flat::Json::Parse(
-    arena, R"({"values":[1,2,3]})");
+const flat::Json* pDocument;
+flat::Json::Status status = flat::Json::Parse(R"({"values":[1,2,3]})", arena, &pDocument);
 if (status == flat::Json::SUCCESS) {
     long long second = (*pDocument)["values"][1].GetLong();
-    const char* text = flat::WriteJson(*pDocument, arena);
+    const char* pText;
+    status = flat::WriteJson(*pDocument, arena, &pText);
 }
 ```
+
+### Packed binary read layout
+
+`Json::Parse` decodes the input text into native binary records in the arena;
+the filled `const Json*` points at the first byte of the packed root subtree.
+The input text is not retained. This is separate from `WriteJson`, which emits
+UTF-8 JSON text rather than dumping the packed representation.
+
+The arena grows in both directions. Serialized text grows forward from `used`,
+while parsed records grow backward from `back`. A successful parse leaves one
+contiguous packed subtree beginning at `back`:
+
+```text
+low address                                                        high address
+
+0                 used                         back                 capacity
+| ArenaHeader | JSON text |     free space     | root packed tree |
+| used, back  |  (optional)                    | Json root first  |
+```
+
+On the supported 64-bit targets, the current records are:
+
+| Record | Current size | Contents and offset base |
+| --- | ---: | --- |
+| `ArenaHeader` | 16 bytes | Two native `size_t` cursors: forward `used` and backward `back`. |
+| `Json` | 16 bytes | Type, packed-subtree `span`, and an 8-byte scalar value or a `u32` relative offset. String, array, and object offsets are relative to this `Json`. |
+| `PackedString` | 8 bytes | `u32 size` and `u32 dataOffset`; `dataOffset` is relative to the `PackedString`. |
+| `ArrayIndex` | `4 + 4N` bytes | `u32 size` followed by one `u32` child offset per element. Every child offset is relative to the `ArrayIndex`. |
+| `ObjectIndex` | `4 + 12N` bytes | `u32 size` followed by `{hash, keyOffset, valueOffset}` entries. Both offsets are relative to the `ObjectIndex`. |
+
+Alignment can insert padding between records, so readers always add the stored
+offset instead of assuming that the next record begins immediately. Conceptually,
+the accessors perform these pointer additions:
+
+```text
+string node  -> Json + stringOffset -> PackedString + dataOffset -> UTF-8 bytes
+array node   -> Json + arrayOffset  -> ArrayIndex  + offsets[i]  -> child Json
+object node  -> Json + objectOffset -> ObjectIndex + keyOffset   -> PackedString
+                                             same ObjectIndex + valueOffset -> value Json
+```
+
+Scalar booleans and numbers live directly in the `Json` payload. Strings store
+their decoded byte count, decoded UTF-8 bytes, and a trailing null byte; the
+stored size remains authoritative because a JSON string may contain `\u0000`.
+Array indexing is O(1). Object lookup scans the exact-sized entry table, using
+each cached hash to avoid comparing key bytes unless the hash and length match.
+
+`Json::span` is the complete byte size of that node and everything beneath it,
+including indexes, strings, children, and alignment padding. Consequently, the
+`span` bytes beginning at a root `Json` can be copied to another suitably aligned
+address and read through the same relative offsets. The representation uses
+native ABI layout and native endianness and is not a versioned, cross-platform
+file format. Its `u32` offsets also limit one packed subtree to less than 4 GiB.
 
 ### Read arrays and objects
 
@@ -80,15 +136,16 @@ if (root.Contains("settings")) {
 
 Internally, an array has an exact-sized table of relative child offsets, and an
 object has a table of hashed keys and relative value offsets. Those packed index
-records provide O(1) array access and object lookup metadata; they are storage
-details in `flat_json.cpp`, not values returned by the public API.
+records provide O(1) array access and compact hash-assisted object scans; they
+are storage details in `flat_json.cpp`, not values returned by the public API.
 
 Outgoing JSON can also be written directly from temporary initializer-list
 expressions. The expression is non-owning and must be consumed in the same full
 expression.
 
 ```cpp
-const char* text = flat::WriteJson(
+const char* pText;
+flat::Json::Status status = flat::WriteJson(
     flat::JsonObject({
         {"model", "gpt-5"},
         {"stream", true},
@@ -99,7 +156,8 @@ const char* text = flat::WriteJson(
             }),
         })},
     }),
-    arena);
+    arena,
+    &pText);
 ```
 
 `MappedBuffer` can wrap caller-owned mapped memory or own a file mapping.
@@ -111,7 +169,8 @@ terminator. Wrapping existing memory does not transfer ownership:
 char bytes[4096];
 flat::MappedBuffer mappedBuffer(bytes, sizeof(bytes));
 
-const char* text = flat::WriteJson(
+const char* pText;
+flat::Json::Status status = flat::WriteJson(
     flat::JsonObject({
         {"model", "gpt-5"},
         {"stream", true},
@@ -122,20 +181,27 @@ const char* text = flat::WriteJson(
             }),
         })},
     }),
-    mappedBuffer);
+    mappedBuffer,
+    &pText);
 ```
+
+If the destination cannot hold the complete text and its null terminator,
+`WriteJson` emits `JSN_WARN`, returns `INSUFFICIENT_SPACE`, and sets `pText` to
+`nullptr`. It does not advance a mapped-buffer cursor or commit an arena's
+forward cursor, so the caller can retry with more space. Any partially written
+bytes are uncommitted and must be ignored.
 
 ### Read mapped JSON back immediately
 
-Save the cursor before writing. The returned pointer is the beginning of the
-JSON text, and the cursor difference gives its bounded length without calling
-`strlen`. Subtract one because `WriteJson` includes a trailing null byte in the
-claimed mapped-buffer range.
+On `SUCCESS`, `WriteJson` always appends a trailing null byte, including when
+the destination is a `MappedBuffer`. The output pointer is therefore a
+null-terminated JSON string, and `strlen` gives its byte length excluding that
+terminator. JSON string values cannot introduce an earlier null because the
+writer escapes them as `\u0000`.
 
 ```cpp
-size_t textOffset = (size_t)mappedBuffer.cursor;
-
-const char* pText = flat::WriteJson(
+const char* pText;
+flat::Json::Status status = flat::WriteJson(
     flat::JsonObject({
         {"model", "gpt-5"},
         {"messages", flat::JsonArray({
@@ -145,12 +211,13 @@ const char* pText = flat::WriteJson(
             }),
         })},
     }),
-    mappedBuffer);
-
-size_t textSize = (size_t)mappedBuffer.cursor - textOffset - 1;
+    mappedBuffer,
+    &pText);
 
 flat::FixedArena<4096> parseArena;
-auto [status, pJson] = flat::Json::Parse(parseArena, pText, textSize);
+const flat::Json* pJson;
+if (status == flat::Json::SUCCESS)
+    status = flat::Json::Parse(pText, strlen(pText), parseArena, &pJson);
 if (status == flat::Json::SUCCESS) {
     const char* pModel = (*pJson)["model"].GetString();
     const char* pContent = (*pJson)["messages"][0]["content"].GetString();
@@ -174,7 +241,8 @@ constexpr size_t FileCapacity = 64 * 1024;
     if (!output.IsValid())
         return false;
 
-    flat::WriteJson(
+    const char* pText;
+    flat::Json::Status status = flat::WriteJson(
         flat::JsonObject({
             {"model", "gpt-5"},
             {"stream", true},
@@ -185,7 +253,10 @@ constexpr size_t FileCapacity = 64 * 1024;
                 }),
             })},
         }),
-        output);
+        output,
+        &pText);
+    if (status != flat::Json::SUCCESS)
+        return false;
 }
 ```
 
@@ -195,7 +266,9 @@ safe because parsing copies the immutable tree and strings into `parseArena`:
 
 ```cpp
 flat::FixedArena<64 * 1024> parseArena;
-auto [status, pJson] = flat::Json::Parse(parseArena, flat::MappedBuffer("request.json"));
+const flat::Json* pJson;
+flat::Json::Status status = flat::Json::Parse(
+    flat::MappedBuffer("request.json"), parseArena, &pJson);
 if (status == flat::Json::SUCCESS) {
     const flat::Json& root = pJson->GetObject();
     const char* pModel = root["model"].GetString();
@@ -253,6 +326,7 @@ Last verified 2026-08-08 on macOS ARM64 with Apple Clang 17.0.0.
 | Check | Current result |
 | --- | --- |
 | Native unit and round-trip tests | Passed on ARM64 |
+| Insufficient output handling | `MappedBuffer` and `FixedArena` warn, return `INSUFFICIENT_SPACE`, preserve their cursors, and support retry |
 | JSONTestSuite | Accepted 95/95 required `y_` cases; rejected 188/188 required `n_` cases; recorded all 35 implementation-defined `i_` cases |
 | README classification audit | All 318 detailed classifications below match the current runner |
 | Native fuzz regression corpus | 2,304/2,304 inputs completed without a crash |
@@ -616,13 +690,3 @@ y_structure_trailing_newline.json                                      PASSED
 y_structure_true_in_array.json                                         PASSED
 y_structure_whitespace_array.json                                      PASSED
 ```
-
-## History
-
-This JSON parser was coded in 2022 by Justine Tunney and Gautham
-Venkatasubramanian. It was originally written in C for Lua in
-[Redbean](https://redbean.dev). See
-<https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c> for
-the original source code. In 2024 Mozilla sponsored converting the
-Redbean JSON library to C++ for
-[llamafile](https://github.com/mozilla-ai/llamafile).
