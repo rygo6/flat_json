@@ -51,8 +51,8 @@ $(BIN) $(OBJ):
 $(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp flat_file.hpp | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
-$(OBJ)/%.o: %.cpp flat_json.hpp flat_file.hpp | $(OBJ)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
+$(OBJ)/%.o: tests/%.cpp flat_json.hpp flat_file.hpp | $(OBJ)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -I. -c -o $@ $<
 
 $(BIN)/%: $(OBJ)/%.o $(OBJ)/flat_json.o | $(BIN)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) -o $@ $^

@@ -407,7 +407,6 @@ Last verified 2026-08-09 on macOS ARM64 with Apple Clang 17.0.0.
 | Native fuzz regression corpus | 2,304/2,304 inputs completed without a crash |
 | UBSan unit tests and fuzz corpus | Unit tests passed; 2,304/2,304 fuzz inputs completed without undefined-behavior or crash failures |
 | x86-64 build and unit tests | Passed under Rosetta on the ARM64 host |
-| CMake/CTest | 1/1 consolidated test passed |
 | Warning-clean build | `flat_json.cpp` compiled with `-Wall -Wextra -Werror` |
 
 The fuzz count is a replay of the repository's `fuzzies/` regression corpus,
