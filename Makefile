@@ -28,10 +28,16 @@ LDFLAGS = $(LDFLAT)
 BIN := bin
 OBJ := $(BIN)/obj
 
-.PHONY: check clean fuzz tests
+.PHONY: benchmark benchmark-deps check clean fuzz tests
 .SECONDARY: $(OBJ)/fuzz.o $(OBJ)/tests.o
 
 check: $(BIN)/tests.ok
+
+benchmark:
+	sh tests/run_benchmarks.sh
+
+benchmark-deps:
+	sh tests/setup_benchmark_deps.sh
 
 clean:
 	rm -rf ./bin
@@ -42,10 +48,10 @@ tests: $(BIN)/tests
 $(BIN) $(OBJ):
 	mkdir -p $@
 
-$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp jtckdint.h | $(OBJ)
+$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp flat_file.hpp | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
-$(OBJ)/%.o: %.cpp flat_json.hpp | $(OBJ)
+$(OBJ)/%.o: %.cpp flat_json.hpp flat_file.hpp | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
 $(BIN)/%: $(OBJ)/%.o $(OBJ)/flat_json.o | $(BIN)
