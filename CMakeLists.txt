@@ -42,7 +42,7 @@ add_link_options(-nostdlib++)
 add_library(json
     flat_json.cpp
 )
-set_target_properties(json PROPERTIES PUBLIC_HEADER "flat_json.hpp")
+set_target_properties(json PROPERTIES PUBLIC_HEADER "flat_json.hpp;flat_file.hpp")
 
 # Tests
 if (JSON_CPP_BUILD_TESTS)

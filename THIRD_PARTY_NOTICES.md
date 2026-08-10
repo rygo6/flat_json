@@ -12,8 +12,8 @@ and bundled components.
 | --- | --- | --- | --- |
 | Original C++ JSON implementation | Basis of `flat_json.cpp`, `flat_json.hpp`, and their tests | [jart/json.cpp](https://github.com/jart/json.cpp), initial import `8fcac1fb7127f9ca7bc667e66d3784e852e8ba87` (exported from Mozilla-Ocho/llamafile) | Apache-2.0 |
 | Original C JSON implementation | Historical source of the parser port | [Cosmopolitan `tool/net/ljson.c`](https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c), written in 2022 by Justine Tunney and Gautham Venkatasubramanian | ISC |
-| jtckdint | `jtckdint.h` | [jart/jtckdint](https://github.com/jart/jtckdint), snapshot version 1.0 dated 2024-12-07 | ISC |
 | google/double-conversion | Amalgamated into `flat_json.cpp` | [google/double-conversion](https://github.com/google/double-conversion), commit `75b48d66ac835da2c1678926f7d61d6cb2992922`, 2024-05-21 | BSD-3-Clause |
+| fast_float | Eisel-Lemire binary64 parsing subset amalgamated into `flat_json.cpp` | [fastfloat/fast_float](https://github.com/fastfloat/fast_float), version 8.2.3 | MIT |
 | JSON for Modern C++ | Benchmark-only `nlohmann/nlohmann.h` | [nlohmann/json](https://github.com/nlohmann/json), version 3.11.3 | MIT; incorporated Abseil portion under Apache-2.0 |
 | JSONTestSuite | `JSONTestSuite/` test vectors and fixtures | [nst/JSONTestSuite](https://github.com/nst/JSONTestSuite), commit `c2011ba75905d2b36baccd60e4c364e785c29885`, 2024-09-30 | MIT |
 
@@ -247,22 +247,6 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 
-## ISC license — `jtckdint.h`
-
-Copyright 2023 Justine Alexandra Roberts Tunney
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THIS SOFTWARE.
-
 ## BSD-3-Clause license — google/double-conversion
 
 Local changes retained by the amalgamation are listed at the start of the
@@ -292,7 +276,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## MIT license — nlohmann/json and JSONTestSuite
+## MIT license — fast_float, nlohmann/json, and JSONTestSuite
 
 The MIT terms below apply to these notices in the checked-in components:
 
@@ -304,6 +288,8 @@ The MIT terms below apply to these notices in the checked-in components:
 - Copyright 2009 Florian Loitsch (Grisu2 code embedded in
   `nlohmann/nlohmann.h`).
 - Copyright 2016 Nicolas Seriot (`JSONTestSuite/`).
+- Copyright 2021 The fast_float authors (the Eisel-Lemire parsing subset
+  embedded in `flat_json.cpp`).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

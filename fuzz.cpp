@@ -47,19 +47,31 @@ main(int argc, char* argv[])
             s = s2;
         }
     }
-    flat::HeapArena a;
-    const flat::Json* pJson;
-    flat::Json::Status status = flat::Json::Parse(s, n, a, &pJson);
+    flat::FixedJsonBuffer<1024 * 1024> a;
+    size_t estimate = flat::Json::EstimateSize(s, n);
+    if (estimate != SIZE_MAX && estimate <= sizeof(a.bytes))
+        a.back = estimate;
+    flat::Json::Status status = flat::Json::Parse(s, n, &a);
+    if (status == flat::Json::INSUFFICIENT_SPACE && estimate != SIZE_MAX && estimate <= sizeof(a.bytes)) {
+        a.back = sizeof(a.bytes);
+        if (flat::Json::Parse(s, n, &a) == flat::Json::SUCCESS)
+            abort();
+    }
+    if (status != flat::Json::SUCCESS) {
+        free(s);
+        puts(flat::Json::StatusToString(status));
+        return 1;
+    }
+    const flat::Json* pJson = a.Root();
+    size_t output_capacity = n <= (SIZE_MAX - 4096) / 128 ? n * 128 + 4096 : 0;
+    char* pOutput = output_capacity ? (char*)xmalloc(output_capacity) : nullptr;
+    status = pJson->ToStringPretty(std::span<char>(pOutput, output_capacity));
     free(s);
     if (status != flat::Json::SUCCESS) {
+        free(pOutput);
         puts(flat::Json::StatusToString(status));
         return 1;
     }
-    const char* pText;
-    status = pJson->ToStringPretty(a, &pText);
-    if (status != flat::Json::SUCCESS) {
-        puts(flat::Json::StatusToString(status));
-        return 1;
-    }
-    puts(pText);
+    puts(pOutput);
+    free(pOutput);
 }

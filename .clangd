@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    - -std=c++23
+    - -fno-exceptions
+    - -fno-rtti
+    - -Wno-c99-designator
+    - -Wno-c23-extensions
+    - -Wno-vla-cxx-extension
+    - -Wno-address-of-temporary
+    - -Wno-missing-field-initializers

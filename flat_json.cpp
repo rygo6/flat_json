@@ -27,22 +27,17 @@
 // limitations under the License.
 
 #include "flat_json.hpp"
-#include "jtckdint.h"
+#include "flat_file.hpp"
 
 #include <algorithm>
-#include <cmath>
+#include <type_traits>
+
 #include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
-#include <span>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <type_traits>
-#include <unistd.h>
 #include <wchar.h>
 
 #if !defined(__x86_64__) && !defined(_M_X64) && !defined(__aarch64__) && !defined(_M_ARM64)
@@ -101,8 +96,8 @@ static_assert(sizeof(void*) == 8, "flat json requires a 64-bit target");
 // double-conversion/utils.h (amalgamated)
 ////////////////////////////////////////////////////////////////////////////////
 
-#define DOUBLE_CONVERSION_ASSERT(condition) JSN_REQUIRE(condition, #condition)
-#define DOUBLE_CONVERSION_UNREACHABLE() JSN_PANIC("Unreachable double-conversion path.")
+#define DOUBLE_CONVERSION_ASSERT(condition) JSON_REQUIRE(condition, #condition)
+#define DOUBLE_CONVERSION_UNREACHABLE() JSON_PANIC("Unreachable double-conversion path.")
 
 // Keep upstream's split spelling for its 64-bit constants.
 #define DOUBLE_CONVERSION_UINT64_2PART_C(a, b) (((static_cast<uint64_t>(a) << 32) + 0x##b##u))
@@ -164,24 +159,10 @@ struct DiyFp
   // this *= other.
   void Multiply(const DiyFp& other)
   {
-    // Simply "emulates" a 128 bit multiplication.
-    // However: the resulting number only Contains 64 bits. The least
-    // significant 64 bits are only used for rounding the most significant 64
-    // bits.
-    const uint64_t Mask32 = 0xFFFFFFFFU;
-    const uint64_t significandHigh = significandValue >> 32;
-    const uint64_t significandLow = significandValue & Mask32;
-    const uint64_t otherHigh = other.significandValue >> 32;
-    const uint64_t otherLow = other.significandValue & Mask32;
-    const uint64_t highProduct = significandHigh * otherHigh;
-    const uint64_t lowHighProduct = significandLow * otherHigh;
-    const uint64_t highLowProduct = significandHigh * otherLow;
-    const uint64_t lowProduct = significandLow * otherLow;
-    // By adding 1U << 31 to temporary we round the final result.
-    // Halfway cases will be rounded up.
-    const uint64_t temporary = (lowProduct >> 32) + (highLowProduct & Mask32) + (lowHighProduct & Mask32) + (1U << 31);
+    unsigned __int128 product = (unsigned __int128)significandValue * other.significandValue;
+    product += (unsigned __int128)1 << 63;
     exponentValue += other.exponentValue + 64;
-    significandValue = highProduct + (highLowProduct >> 32) + (lowHighProduct >> 32) + (temporary >> 32);
+    significandValue = (uint64_t)(product >> 64);
   }
 
   void Normalize()
@@ -513,7 +494,7 @@ struct Bignum
   void AssignUInt64(uint64_t value);
   void AssignBignum(const Bignum& other);
 
-  void AssignDecimalString(std::span<const char> value);
+  void AssignDecimalString(flat::JsonSpan<const char> value);
 
   void AssignPowerUInt16(uint16_t base, const int exponent);
 
@@ -622,7 +603,7 @@ struct Bignum
 //   'v'. If there are two at the same distance, than the number is round up.
 // 'BignumDtoa' expects the given buffer to be big enough to hold all digits
 // and a terminating null-character.
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, std::span<char> buffer, int* pLength, int* pDecimalPoint);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::JsonSpan<char> buffer, int* pLength, int* pDecimalPoint);
 
 ////////////////////////////////////////////////////////////////////////////////
 // double-conversion/cached-powers.h (amalgamated)
@@ -640,7 +621,8 @@ void GetCachedPowerForDecimalExponent(int requestedExponent, DiyFp* pPower, int*
 ////////////////////////////////////////////////////////////////////////////////
 
 // Converts the parser's already-trimmed arena digit span.
-double StrtodTrimmed(std::span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
+double StrtodTrimmed(flat::JsonSpan<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
+bool StrtodFast(uint64_t significand, int readDigits, int totalDigits, bool roundUp, int exponent, double* pResult);
 
 ////////////////////////////////////////////////////////////////////////////////
 // double-conversion/bignum.cc (amalgamated)
@@ -693,7 +675,7 @@ void Bignum::AssignBignum(const Bignum& other)
   usedBigits = other.usedBigits;
 }
 
-static uint64_t ReadUInt64(std::span<const char> buffer, const int from, const int digitsToRead)
+static uint64_t ReadUInt64(flat::JsonSpan<const char> buffer, const int from, const int digitsToRead)
 {
   uint64_t result = 0;
   for (int i = from; i < from + digitsToRead; ++i) {
@@ -704,7 +686,7 @@ static uint64_t ReadUInt64(std::span<const char> buffer, const int from, const i
   return result;
 }
 
-void Bignum::AssignDecimalString(std::span<const char> value)
+void Bignum::AssignDecimalString(flat::JsonSpan<const char> value)
 {
   // 2^64 = 18446744073709551616 > 10^19
   static const int MaxUint64DecimalDigits = 19;
@@ -901,8 +883,8 @@ void Bignum::Square()
   //
   // Assert that the additional number of bits in a DoubleChunk are enough to
   // sum up usedDigits of Bigit*Bigit.
-  JSN_REQUIRE((1 << (2 * (ChunkSize - BigitSize))) > usedBigits,
-              "double-conversion bignum multiplication overflow.");
+  static_assert((1 << (2 * (ChunkSize - BigitSize))) > BigitCapacity,
+                "double-conversion bignum multiplication could overflow.");
   DoubleChunk accumulator = 0;
   // First shift the digits so we don't overwrite them.
   const int copyOffset = usedBigits;
@@ -1286,8 +1268,8 @@ static void InitialScaledStartValues(uint64_t significand, int exponent, bool lo
 static void FixupMultiply10(int estimatedPower, bool isEven, int* pDecimalPoint, Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus);
 // Generates digits from the left to the right and stops when the generated
 // digits yield the shortest decimal representation of v.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, std::span<char> buffer, int* pLength);
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, std::span<char> buffer, int* pLength, int* pDecimalPoint)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::JsonSpan<char> buffer, int* pLength);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::JsonSpan<char> buffer, int* pLength, int* pDecimalPoint)
 {
   DOUBLE_CONVERSION_ASSERT(value > 0);
   DOUBLE_CONVERSION_ASSERT(!Double(value).IsSpecial());
@@ -1341,7 +1323,7 @@ void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, std::span<
 // Precondition: 0 <= (pNumerator+pDeltaPlus) / pDenominator < 10.
 //   If 1 <= (pNumerator+pDeltaPlus) / pDenominator < 10 then no leading 0 digit
 //   will be produced. This should be the standard precondition.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, std::span<char> buffer, int* pLength)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::JsonSpan<char> buffer, int* pLength)
 {
   // Small optimization: if pDeltaMinus and pDeltaPlus are the same just reuse
   // one of the two bignums.
@@ -1762,7 +1744,7 @@ static const int MaxSignificantDecimalDigits = 780;
 // When the string starts with "1844674407370955161" no further digit is read.
 // Since 2^64 = 18446744073709551616 it would still be possible read another
 // digit if it was less or equal than 6, but this would complicate the code.
-static uint64_t ReadUint64(std::span<const char> buffer, int* pNumberOfReadDigits)
+static uint64_t ReadUint64(flat::JsonSpan<const char> buffer, int* pNumberOfReadDigits)
 {
   uint64_t result = 0;
   int i = 0;
@@ -1773,29 +1755,6 @@ static uint64_t ReadUint64(std::span<const char> buffer, int* pNumberOfReadDigit
   }
   *pNumberOfReadDigits = i;
   return result;
-}
-
-// Reads a DiyFp from the buffer.
-// The returned DiyFp is not necessarily normalized.
-// If remainingDecimals is zero then the returned DiyFp is accurate.
-// Otherwise it has been rounded and has error of at most 1/2 ulp.
-static void ReadDiyFp(std::span<const char> buffer, DiyFp* pResult, int* pRemainingDecimals)
-{
-  int readDigits;
-  uint64_t significand = ReadUint64(buffer, &readDigits);
-  if ((int)buffer.size() == readDigits) {
-    *pResult = DiyFp(significand, 0);
-    *pRemainingDecimals = 0;
-  } else {
-    // Round the significand.
-    if (buffer[readDigits] >= '5') {
-      significand++;
-    }
-    // Compute the binary exponent.
-    int exponent = 0;
-    *pResult = DiyFp(significand, exponent);
-    *pRemainingDecimals = (int)buffer.size() - readDigits;
-  }
 }
 
 // Returns 10^exponent as an exact DiyFp.
@@ -1809,33 +1768,26 @@ static DiyFp AdjustmentPowerOfTen(int exponent)
   DOUBLE_CONVERSION_ASSERT(DecimalExponentDistance == 8);
   switch (exponent)
   {
-    case 1:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xa0000000, 00000000), -60);
-    case 2:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xc8000000, 00000000), -57);
-    case 3:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xfa000000, 00000000), -54);
-    case 4:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0x9c400000, 00000000), -50);
-    case 5:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xc3500000, 00000000), -47);
-    case 6:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xf4240000, 00000000), -44);
-    case 7:
-      return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0x98968000, 00000000), -40);
-    default:
-      DOUBLE_CONVERSION_UNREACHABLE();
+    case 1:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xa0000000, 00000000), -60);
+    case 2:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xc8000000, 00000000), -57);
+    case 3:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xfa000000, 00000000), -54);
+    case 4:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0x9c400000, 00000000), -50);
+    case 5:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xc3500000, 00000000), -47);
+    case 6:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0xf4240000, 00000000), -44);
+    case 7:  return DiyFp(DOUBLE_CONVERSION_UINT64_2PART_C(0x98968000, 00000000), -40);
+    default: DOUBLE_CONVERSION_UNREACHABLE();
   }
 }
 
 // If the function returns true then the result is the correct double.
 // Otherwise it is either the correct double or the double that is just below
 // the correct double.
-static bool DiyFpStrtod(std::span<const char> buffer, int exponent, double* pResult)
+static bool DiyFpStrtod(uint64_t significand, int readDigits, int totalDigits, bool roundUp, int exponent, double* pResult)
 {
-  DiyFp input;
-  int remainingDecimals;
-  ReadDiyFp(buffer, &input, &remainingDecimals);
+  int remainingDecimals = totalDigits - readDigits;
+  if (remainingDecimals && roundUp)
+    ++significand;
+  DiyFp input(significand, 0);
   // Since we may have dropped some digits the input is not accurate.
   // If remainingDecimals is different than 0 than the error is at most
   // .5 ulp (unit in the last place).
@@ -1864,7 +1816,7 @@ static bool DiyFpStrtod(std::span<const char> buffer, int exponent, double* pRes
     int adjustmentExponent = exponent - cachedDecimalExponent;
     DiyFp adjustmentPower = AdjustmentPowerOfTen(adjustmentExponent);
     input.Multiply(adjustmentPower);
-    if (MaxUint64DecimalDigits - (int)buffer.size() >= adjustmentExponent) {
+    if (MaxUint64DecimalDigits - totalDigits >= adjustmentExponent) {
       // The product of input with the adjustment power fits into a 64 bit
       // integer.
       DOUBLE_CONVERSION_ASSERT(DiyFp::SignificandSize == 64);
@@ -1933,6 +1885,14 @@ static bool DiyFpStrtod(std::span<const char> buffer, int exponent, double* pRes
   }
 }
 
+static bool DiyFpStrtod(flat::JsonSpan<const char> buffer, int exponent, double* pResult)
+{
+  int readDigits;
+  uint64_t significand = ReadUint64(buffer, &readDigits);
+  bool roundUp = readDigits < (int)buffer.size() && buffer[readDigits] >= '5';
+  return DiyFpStrtod(significand, readDigits, (int)buffer.size(), roundUp, exponent, pResult);
+}
+
 // Returns
 //   - -1 if buffer*10^exponent < diyFp.
 //   -  0 if buffer*10^exponent == diyFp.
@@ -1941,7 +1901,7 @@ static bool DiyFpStrtod(std::span<const char> buffer, int exponent, double* pRes
 //   buffer.length() + exponent <= MaxDecimalPower + 1
 //   buffer.length() + exponent > MinDecimalPower
 //   buffer.length() <= MaxDecimalSignificantDigits
-static int CompareBufferWithDiyFp(std::span<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
+static int CompareBufferWithDiyFp(flat::JsonSpan<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
 {
   DOUBLE_CONVERSION_ASSERT((int)buffer.size() + exponent <= MaxDecimalPower + 1);
   DOUBLE_CONVERSION_ASSERT((int)buffer.size() + exponent > MinDecimalPower);
@@ -1970,7 +1930,7 @@ static int CompareBufferWithDiyFp(std::span<const char> buffer, int exponent, Di
 
 // Returns true if the guess is the correct double.
 // Returns false, when guess is either correct or the next-lower double.
-static bool ComputeGuess(std::span<const char> trimmed, int exponent, double* pGuess)
+static bool ComputeGuess(flat::JsonSpan<const char> trimmed, int exponent, double* pGuess)
 {
   if (trimmed.empty()) {
     *pGuess = 0.0;
@@ -1985,13 +1945,30 @@ static bool ComputeGuess(std::span<const char> trimmed, int exponent, double* pG
     return true;
   }
 
-  // DiyFp supplies a neighboring finite guess. Every nontrivial finite value
-  // is then checked by the same exact bignum rounding path below.
-  DiyFpStrtod(trimmed, exponent, pGuess);
+  // DiyFp uses integer arithmetic and explicit error bounds. A true result is
+  // proven correctly rounded on every supported architecture; difficult cases
+  // still use the exact bignum comparison below.
+  if (DiyFpStrtod(trimmed, exponent, pGuess)) {
+    return true;
+  }
   if (*pGuess == Double::Infinity()) {
     return true;
   }
   return false;
+}
+
+bool StrtodFast(uint64_t significand, int readDigits, int totalDigits, bool roundUp, int exponent, double* pResult)
+{
+  DOUBLE_CONVERSION_ASSERT(totalDigits > 0);
+  if (exponent + totalDigits - 1 >= MaxDecimalPower) {
+    *pResult = Double::Infinity();
+    return true;
+  }
+  if (exponent + totalDigits <= MinDecimalPower) {
+    *pResult = 0.0;
+    return true;
+  }
+  return DiyFpStrtod(significand, readDigits, totalDigits, roundUp, exponent, pResult);
 }
 
 static bool IsDigit(const char digit) { return ('0' <= digit) && (digit <= '9'); }
@@ -2003,7 +1980,7 @@ static bool IsNonZeroDigit(const char digit) { return ('1' <= digit) && (digit <
 [[maybe_unused]]
 #endif
 #endif
-static bool AssertTrimmedDigits(std::span<const char> buffer)
+static bool AssertTrimmedDigits(flat::JsonSpan<const char> buffer)
 {
   for (int i = 0; i < (int)buffer.size(); ++i) {
     if (!IsDigit(buffer[i])) {
@@ -2013,7 +1990,7 @@ static bool AssertTrimmedDigits(std::span<const char> buffer)
   return buffer.empty() || (IsNonZeroDigit(buffer[0]) && IsNonZeroDigit(buffer[buffer.size() - 1]));
 }
 
-double StrtodTrimmed(std::span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
+double StrtodTrimmed(flat::JsonSpan<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
 {
   DOUBLE_CONVERSION_ASSERT((int)trimmed.size() <= MaxSignificantDecimalDigits);
   DOUBLE_CONVERSION_ASSERT(AssertTrimmedDigits(trimmed));
@@ -2081,14 +2058,10 @@ static constexpr size_t HexByteCount = 256;
 static constexpr size_t Utf8MaximumSequenceSize = 4;
 static constexpr size_t Utf16EscapeSize = 6;
 
-struct ArenaHeader
+static u32 Hash32(JsonString key)
 {
-  size_t used;
-  size_t back;
-};
-
-static u32 Hash32(const char* pKey, size_t length)
-{
+  const char* pKey = key.pData;
+  size_t length = key.size;
   u32 hash = 0x9747b28c;
   u32 word = 0;
   size_t offset = 0;
@@ -2127,38 +2100,26 @@ static u32 Hash32(const char* pKey, size_t length)
   return hash;
 }
 
-static void InitializeArena(ArenaBuffer* pArena, void* pBuffer, size_t size)
-{
-  pArena->pBase = (char*)pBuffer;
-  ArenaHeader* pHeader = (ArenaHeader*)pArena->pBase;
-  pHeader->used = sizeof(ArenaHeader);
-  pHeader->back = size;
-}
+static constexpr u32 InvalidOffset = UINT32_MAX;
 
-static u32 BackAlloc(ArenaBuffer arena, size_t byteCount, size_t alignment = 8)
+JSON_INLINE static u32 BackAlloc(size_t& back, size_t used, size_t byteCount, size_t alignment = 8)
 {
-  ArenaHeader* pHeader = (ArenaHeader*)arena.pBase;
-  JSN_REQUIRE(byteCount <= pHeader->back, "Arena allocation of %zu bytes exceeds capacity.", byteCount);
-  size_t offset = (pHeader->back - byteCount) & ~(alignment - 1);
-  JSN_REQUIRE(offset >= pHeader->used, "Arena is full.");
-  pHeader->back = offset;
+  JSON_ASSERT(alignment && !(alignment & (alignment - 1)), "Buffer allocation alignment must be a power of two.");
+  if (byteCount > back) [[unlikely]] {
+    JSON_WARN("JSON parse buffer cannot allocate %zu bytes.\n", byteCount);
+    return InvalidOffset;
+  }
+  size_t offset = (back - byteCount) & ~(alignment - 1);
+  if (offset < used) [[unlikely]] {
+    JSON_WARN("JSON parse buffer is full; allocation needs %zu bytes.\n", byteCount);
+    return InvalidOffset;
+  }
+  back = offset;
   return (u32)offset;
 }
 
 template<typename T, typename Like>
 using ConstLike = std::conditional_t<std::is_const_v<std::remove_reference_t<Like>>, const T, T>;
-
-struct PackedString
-{
-  u32 size;
-  u32 dataOffset;
-};
-
-struct ArrayIndex
-{
-  u32 size;
-  auto Offsets(this auto& self) { return (ConstLike<u32, decltype(self)>*)(&self + 1); }
-};
 
 struct ObjectEntry
 {
@@ -2169,164 +2130,13 @@ struct ObjectEntry
 
 struct ObjectIndex
 {
-  u32 size;
-
+  u32 bucketCount;
   auto Entries(this auto& self) { return (ConstLike<ObjectEntry, decltype(self)>*)(&self + 1); }
+  auto Buckets(this auto& self, u32 size) { return (ConstLike<u32, decltype(self)>*)(self.Entries() + size); }
 };
 
-MappedBuffer::MappedBuffer(void* pMapping, size_t byteCount, size_t byteOffset)
-  : mapped(pMapping), size(byteCount), cursor(byteOffset), _writable(true)
-{
-  JSN_REQUIRE(pMapping, "MappedBuffer cannot wrap null memory.");
-  JSN_REQUIRE(byteCount, "MappedBuffer cannot wrap an empty memory range.");
-  JSN_REQUIRE(byteOffset <= byteCount, "MappedBuffer offset %zu exceeds its %zu-byte capacity.", byteOffset, byteCount);
-}
-
-MappedBuffer::MappedBuffer(const char* pPath)
-{
-  JSN_REQUIRE(pPath, "MappedBuffer input path cannot be null.");
-  _descriptor = open(pPath, O_RDONLY | O_CLOEXEC);
-  if (_descriptor < 0) {
-    int error = errno;
-    JSN_ERR("Could not open JSON input '%s': %s (%d)\n", pPath, strerror(error), error);
-    return;
-  }
-
-  struct stat fileInfo = {};
-  if (fstat(_descriptor, &fileInfo)) {
-    int error = errno;
-    JSN_ERR("Could not inspect JSON input '%s': %s (%d)\n", pPath, strerror(error), error);
-    if (close(_descriptor)) {
-      error = errno;
-      JSN_WARN("Could not close JSON input '%s' after inspection failed: %s (%d)\n", pPath, strerror(error), error);
-    }
-    _descriptor = -1;
-    return;
-  }
-
-  if (fileInfo.st_size <= 0) {
-    JSN_WARN("JSON input '%s' is empty.\n", pPath);
-    if (close(_descriptor)) {
-      int error = errno;
-      JSN_WARN("Could not close empty JSON input '%s': %s (%d)\n", pPath, strerror(error), error);
-    }
-    _descriptor = -1;
-    return;
-  }
-
-  size = (size_t)fileInfo.st_size;
-  mapped = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, _descriptor, 0);
-  if (mapped == MAP_FAILED) {
-    int error = errno;
-    JSN_ERR("Could not map JSON input '%s': %s (%d)\n", pPath, strerror(error), error);
-    mapped = nullptr;
-    size = 0;
-    if (close(_descriptor)) {
-      error = errno;
-      JSN_WARN("Could not close JSON input '%s' after mapping failed: %s (%d)\n", pPath, strerror(error), error);
-    }
-    _descriptor = -1;
-  }
-}
-
-MappedBuffer::MappedBuffer(const char* pPath, size_t capacity)
-{
-  JSN_REQUIRE(pPath, "MappedBuffer output path cannot be null.");
-  JSN_REQUIRE(capacity, "MappedBuffer output capacity cannot be zero.");
-  JSN_REQUIRE(capacity <= LLONG_MAX, "MappedBuffer output capacity exceeds the 64-bit file limit.");
-  _descriptor = open(pPath, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  if (_descriptor < 0) {
-    int error = errno;
-    JSN_ERR("Could not open JSON output '%s': %s (%d)\n", pPath, strerror(error), error);
-    return;
-  }
-
-  if (ftruncate(_descriptor, (off_t)capacity)) {
-    int error = errno;
-    JSN_ERR("Could not size JSON output '%s' to %zu bytes: %s (%d)\n", pPath, capacity, strerror(error), error);
-    if (close(_descriptor)) {
-      error = errno;
-      JSN_WARN("Could not close JSON output '%s' after sizing failed: %s (%d)\n", pPath, strerror(error), error);
-    }
-    _descriptor = -1;
-    return;
-  }
-
-  mapped = mmap(nullptr, capacity, PROT_READ | PROT_WRITE, MAP_SHARED, _descriptor, 0);
-  if (mapped == MAP_FAILED) {
-    int error = errno;
-    JSN_ERR("Could not map JSON output '%s': %s (%d)\n", pPath, strerror(error), error);
-    mapped = nullptr;
-    if (ftruncate(_descriptor, 0)) {
-      error = errno;
-      JSN_WARN("Could not restore JSON output '%s' after mapping failed: %s (%d)\n", pPath, strerror(error), error);
-    }
-    if (close(_descriptor)) {
-      error = errno;
-      JSN_WARN("Could not close JSON output '%s' after mapping failed: %s (%d)\n", pPath, strerror(error), error);
-    }
-    _descriptor = -1;
-    return;
-  }
-  size = capacity;
-  _writable = true;
-}
-
-MappedBuffer::~MappedBuffer()
-{
-  if (_descriptor < 0)
-    return;
-
-  if (mapped) {
-    if (_writable && cursor && msync(mapped, cursor, MS_SYNC)) {
-      int error = errno;
-      JSN_WARN("Could not flush JSON output descriptor %d: %s (%d)\n", _descriptor, strerror(error), error);
-    }
-    if (munmap(mapped, size)) {
-      int error = errno;
-      JSN_WARN("Could not unmap JSON descriptor %d: %s (%d)\n", _descriptor, strerror(error), error);
-    }
-  }
-
-  if (_writable && ftruncate(_descriptor, (off_t)(cursor ? cursor - 1 : 0))) {
-    int error = errno;
-    JSN_WARN("Could not trim JSON output descriptor %d to %zu bytes: %s (%d)\n",
-             _descriptor, cursor ? cursor - 1 : 0, strerror(error), error);
-  }
-  if (close(_descriptor)) {
-    int error = errno;
-    JSN_WARN("Could not close JSON descriptor %d: %s (%d)\n", _descriptor, strerror(error), error);
-  }
-}
-
-HeapArena::HeapArena(size_t capacity)
-{
-  JSN_REQUIRE(capacity >= sizeof(ArenaHeader) + 8, "HeapArena capacity is too small.");
-  void* pBuffer = malloc(capacity);
-  JSN_REQUIRE(pBuffer, "HeapArena allocation of %zu bytes failed.", capacity);
-  InitializeArena(this, pBuffer, capacity);
-}
-
-HeapArena::~HeapArena() { free(pBase); }
-
-///////////////////////////////////////////////////////
-// ArenaBuffer::Attach
-//  Initializes an arena over caller-owned memory.
-///////////////////////////////////////////////////////
-ArenaBuffer ArenaBuffer::Attach(void* pBuffer, size_t size)
-{
-  JSN_REQUIRE(pBuffer, "Cannot attach an arena to null memory.");
-  uintptr_t address = ((uintptr_t)pBuffer + 7) & ~(uintptr_t)7;
-  size_t skew = address - (uintptr_t)pBuffer;
-  JSN_REQUIRE(size >= skew + sizeof(ArenaHeader) + 8, "Arena buffer is too small.");
-  char* pAlignedBase = (char*)address;
-  ArenaBuffer arena;
-  InitializeArena(&arena, pAlignedBase, size - skew);
-  return arena;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
-// Direct arena output
+// Direct bounded output
 ////////////////////////////////////////////////////////////////////////////////
 
 struct OutputBuffer
@@ -2334,30 +2144,24 @@ struct OutputBuffer
   char* pData = nullptr;
   size_t size = 0;
   size_t capacity = 0;
-  ArenaHeader* pArena = nullptr;
-  bool failed = false;
+  Json::Status status = Json::SUCCESS;
 
-  explicit OutputBuffer(ArenaBuffer arena)
+  explicit OutputBuffer(JsonSpan<char> output) : pData(output.data()), capacity(output.size())
   {
-    JSN_REQUIRE(arena.pBase, "JSON output arena cannot be null.");
-    pArena = (ArenaHeader*)arena.pBase;
-    size_t offset = (pArena->used + 7) & ~(size_t)7;
-    if (offset > pArena->back)
-      offset = pArena->back;
-    pData = arena.pBase + offset;
-    capacity = pArena->back - offset;
+    if (!pData && capacity) {
+      JSON_WARN("JSON output cannot be null when its capacity is nonzero.\n");
+      status = Json::INVALID_ARGUMENT;
+    }
   }
-
-  explicit OutputBuffer(std::span<char> output) : pData(output.data()), capacity(output.size()) {}
 
   bool ReserveBytes(size_t count)
   {
-    if (failed)
+    if (status != Json::SUCCESS)
       return false;
     if (count <= capacity - size)
       return true;
-    JSN_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
-    failed = true;
+    JSON_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
+    status = Json::INSUFFICIENT_SPACE;
     return false;
   }
 
@@ -2381,6 +2185,18 @@ struct OutputBuffer
     Append(text, Size - 1);
   }
 
+  void AppendQuoted(const char* pSource, size_t count)
+  {
+    char* pOutput = Reserve(count + 2);
+    if (!pOutput)
+      return;
+    pOutput[0] = '"';
+    if (count)
+      memcpy(pOutput + 1, pSource, count);
+    pOutput[count + 1] = '"';
+    Commit(count + 2);
+  }
+
   char* Reserve(size_t count)
   {
     if (!ReserveBytes(count))
@@ -2390,32 +2206,26 @@ struct OutputBuffer
 
   void Commit(size_t count)
   {
-    if (!ReserveBytes(count))
-      return;
+    JSON_ASSERT(count <= capacity - size, "JSON output commit exceeds reserved capacity.");
     size += count;
   }
 
-  Json::Status Finish(size_t* pByteCount, const char** ppText)
+  Json::Status Finish(size_t* pByteCount = nullptr)
   {
-    JSN_REQUIRE(ppText, "JSON output pointer cannot be null.");
-    *ppText = nullptr;
     if (pByteCount)
       *pByteCount = 0;
     Add('\0');
-    if (failed)
-      return Json::INSUFFICIENT_SPACE;
-    if (pArena)
-      pArena->used = (size_t)(pData - (char*)pArena) + size;
+    if (status != Json::SUCCESS)
+      return status;
     if (pByteCount)
       *pByteCount = size;
-    *ppText = pData;
     return Json::SUCCESS;
   }
 };
 
-static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent);
-static void WriteJsonString(OutputBuffer& buffer, const char* pData, size_t size);
-static void WriteEscapedString(OutputBuffer& buffer, const char* pData, size_t size);
+template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, bool pretty, int indent);
+template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString string);
+template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonString string);
 
 static const char EscapeLiteral[EscapeLiteralCount] = {
   9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 2, 9, 4, 3, 9,
@@ -2504,6 +2314,212 @@ static int Bsr(int value)
 // Number conversion
 ////////////////////////////////////////////////////////////////////////////////
 
+////////////////////////////////////////////////////////////////////////////////
+// Embedded fast_float Eisel-Lemire subset
+////////////////////////////////////////////////////////////////////////////////
+//
+// Origin: https://github.com/fastfloat/fast_float
+// Version: 8.2.3
+// Copyright 2021 The fast_float authors
+// License: MIT (complete notice in THIRD_PARTY_NOTICES.md)
+//
+// This retains only binary64 conversion for at-most-19-digit decimals in the
+// finite binary32 decimal-exponent range. Every other number falls back to the
+// exact amalgamated double-conversion path above.
+
+namespace fast_decimal {
+
+struct Value128
+{
+  uint64_t low;
+  uint64_t high;
+};
+
+struct AdjustedMantissa
+{
+  uint64_t mantissa;
+  int32_t power2;
+};
+
+static constexpr int SmallestPower = -64;
+static constexpr int LargestPower = 38;
+static constexpr uint64_t PowerOfFive[] = {
+  0xa87fea27a539e9a5, 0x3f2398d747b36224,
+  0xd29fe4b18e88640e, 0x8eec7f0d19a03aad,
+  0x83a3eeeef9153e89, 0x1953cf68300424ac,
+  0xa48ceaaab75a8e2b, 0x5fa8c3423c052dd7,
+  0xcdb02555653131b6, 0x3792f412cb06794d,
+  0x808e17555f3ebf11, 0xe2bbd88bbee40bd0,
+  0xa0b19d2ab70e6ed6, 0x5b6aceaeae9d0ec4,
+  0xc8de047564d20a8b, 0xf245825a5a445275,
+  0xfb158592be068d2e, 0xeed6e2f0f0d56712,
+  0x9ced737bb6c4183d, 0x55464dd69685606b,
+  0xc428d05aa4751e4c, 0xaa97e14c3c26b886,
+  0xf53304714d9265df, 0xd53dd99f4b3066a8,
+  0x993fe2c6d07b7fab, 0xe546a8038efe4029,
+  0xbf8fdb78849a5f96, 0xde98520472bdd033,
+  0xef73d256a5c0f77c, 0x963e66858f6d4440,
+  0x95a8637627989aad, 0xdde7001379a44aa8,
+  0xbb127c53b17ec159, 0x5560c018580d5d52,
+  0xe9d71b689dde71af, 0xaab8f01e6e10b4a6,
+  0x9226712162ab070d, 0xcab3961304ca70e8,
+  0xb6b00d69bb55c8d1, 0x3d607b97c5fd0d22,
+  0xe45c10c42a2b3b05, 0x8cb89a7db77c506a,
+  0x8eb98a7a9a5b04e3, 0x77f3608e92adb242,
+  0xb267ed1940f1c61c, 0x55f038b237591ed3,
+  0xdf01e85f912e37a3, 0x6b6c46dec52f6688,
+  0x8b61313bbabce2c6, 0x2323ac4b3b3da015,
+  0xae397d8aa96c1b77, 0xabec975e0a0d081a,
+  0xd9c7dced53c72255, 0x96e7bd358c904a21,
+  0x881cea14545c7575, 0x7e50d64177da2e54,
+  0xaa242499697392d2, 0xdde50bd1d5d0b9e9,
+  0xd4ad2dbfc3d07787, 0x955e4ec64b44e864,
+  0x84ec3c97da624ab4, 0xbd5af13bef0b113e,
+  0xa6274bbdd0fadd61, 0xecb1ad8aeacdd58e,
+  0xcfb11ead453994ba, 0x67de18eda5814af2,
+  0x81ceb32c4b43fcf4, 0x80eacf948770ced7,
+  0xa2425ff75e14fc31, 0xa1258379a94d028d,
+  0xcad2f7f5359a3b3e, 0x096ee45813a04330,
+  0xfd87b5f28300ca0d, 0x8bca9d6e188853fc,
+  0x9e74d1b791e07e48, 0x775ea264cf55347e,
+  0xc612062576589dda, 0x95364afe032a819e,
+  0xf79687aed3eec551, 0x3a83ddbd83f52205,
+  0x9abe14cd44753b52, 0xc4926a9672793543,
+  0xc16d9a0095928a27, 0x75b7053c0f178294,
+  0xf1c90080baf72cb1, 0x5324c68b12dd6339,
+  0x971da05074da7bee, 0xd3f6fc16ebca5e04,
+  0xbce5086492111aea, 0x88f4bb1ca6bcf585,
+  0xec1e4a7db69561a5, 0x2b31e9e3d06c32e6,
+  0x9392ee8e921d5d07, 0x3aff322e62439fd0,
+  0xb877aa3236a4b449, 0x09befeb9fad487c3,
+  0xe69594bec44de15b, 0x4c2ebe687989a9b4,
+  0x901d7cf73ab0acd9, 0x0f9d37014bf60a11,
+  0xb424dc35095cd80f, 0x538484c19ef38c95,
+  0xe12e13424bb40e13, 0x2865a5f206b06fba,
+  0x8cbccc096f5088cb, 0xf93f87b7442e45d4,
+  0xafebff0bcb24aafe, 0xf78f69a51539d749,
+  0xdbe6fecebdedd5be, 0xb573440e5a884d1c,
+  0x89705f4136b4a597, 0x31680a88f8953031,
+  0xabcc77118461cefc, 0xfdc20d2b36ba7c3e,
+  0xd6bf94d5e57a42bc, 0x3d32907604691b4d,
+  0x8637bd05af6c69b5, 0xa63f9a49c2c1b110,
+  0xa7c5ac471b478423, 0x0fcf80dc33721d54,
+  0xd1b71758e219652b, 0xd3c36113404ea4a9,
+  0x83126e978d4fdf3b, 0x645a1cac083126ea,
+  0xa3d70a3d70a3d70a, 0x3d70a3d70a3d70a4,
+  0xcccccccccccccccc, 0xcccccccccccccccd,
+  0x8000000000000000, 0x0000000000000000,
+  0xa000000000000000, 0x0000000000000000,
+  0xc800000000000000, 0x0000000000000000,
+  0xfa00000000000000, 0x0000000000000000,
+  0x9c40000000000000, 0x0000000000000000,
+  0xc350000000000000, 0x0000000000000000,
+  0xf424000000000000, 0x0000000000000000,
+  0x9896800000000000, 0x0000000000000000,
+  0xbebc200000000000, 0x0000000000000000,
+  0xee6b280000000000, 0x0000000000000000,
+  0x9502f90000000000, 0x0000000000000000,
+  0xba43b74000000000, 0x0000000000000000,
+  0xe8d4a51000000000, 0x0000000000000000,
+  0x9184e72a00000000, 0x0000000000000000,
+  0xb5e620f480000000, 0x0000000000000000,
+  0xe35fa931a0000000, 0x0000000000000000,
+  0x8e1bc9bf04000000, 0x0000000000000000,
+  0xb1a2bc2ec5000000, 0x0000000000000000,
+  0xde0b6b3a76400000, 0x0000000000000000,
+  0x8ac7230489e80000, 0x0000000000000000,
+  0xad78ebc5ac620000, 0x0000000000000000,
+  0xd8d726b7177a8000, 0x0000000000000000,
+  0x878678326eac9000, 0x0000000000000000,
+  0xa968163f0a57b400, 0x0000000000000000,
+  0xd3c21bcecceda100, 0x0000000000000000,
+  0x84595161401484a0, 0x0000000000000000,
+  0xa56fa5b99019a5c8, 0x0000000000000000,
+  0xcecb8f27f4200f3a, 0x0000000000000000,
+  0x813f3978f8940984, 0x4000000000000000,
+  0xa18f07d736b90be5, 0x5000000000000000,
+  0xc9f2c9cd04674ede, 0xa400000000000000,
+  0xfc6f7c4045812296, 0x4d00000000000000,
+  0x9dc5ada82b70b59d, 0xf020000000000000,
+  0xc5371912364ce305, 0x6c28000000000000,
+  0xf684df56c3e01bc6, 0xc732000000000000,
+  0x9a130b963a6c115c, 0x3c7f400000000000,
+  0xc097ce7bc90715b3, 0x4b9f100000000000,
+  0xf0bdc21abb48db20, 0x1e86d40000000000,
+  0x96769950b50d88f4, 0x1314448000000000,
+};
+
+JSON_INLINE static Value128 Multiply(uint64_t a, uint64_t b)
+{
+  unsigned __int128 product = (unsigned __int128)a * b;
+  return {(uint64_t)product, (uint64_t)(product >> 64)};
+}
+
+JSON_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
+{
+  size_t index = 2 * (size_t)(exponent - SmallestPower);
+  Value128 product = Multiply(significand, PowerOfFive[index]);
+  if ((product.high & 0x1ff) == 0x1ff) {
+    Value128 lower = Multiply(significand, PowerOfFive[index + 1]);
+    product.low += lower.high;
+    if (lower.high > product.low)
+      ++product.high;
+  }
+  return product;
+}
+
+JSON_INLINE static int BinaryPower(int exponent) { return (((152170 + 65536) * exponent) >> 16) + 63; }
+
+JSON_INLINE static bool Convert(uint64_t significand, int exponent, bool negative, double* pValue)
+{
+  if (exponent < SmallestPower || exponent > LargestPower)
+    return false;
+  AdjustedMantissa adjusted = {};
+  if (!significand) {
+    uint64_t bits = (uint64_t)negative << 63;
+    memcpy(pValue, &bits, sizeof(bits));
+    return true;
+  }
+
+  int leadingZeroes = __builtin_clzll(significand);
+  uint64_t normalized = significand << leadingZeroes;
+  Value128 product = ComputeProduct(exponent, normalized);
+  int upperBit = product.high >> 63;
+  int shift = upperBit + 9;
+  adjusted.mantissa = product.high >> shift;
+  adjusted.power2 = BinaryPower(exponent) + upperBit - leadingZeroes + 1023;
+
+  if (adjusted.power2 <= 0) {
+    if (-adjusted.power2 + 1 >= 64) {
+      adjusted = {};
+    } else {
+      adjusted.mantissa >>= -adjusted.power2 + 1;
+      adjusted.mantissa += adjusted.mantissa & 1;
+      adjusted.mantissa >>= 1;
+      adjusted.power2 = adjusted.mantissa < (1ull << 52) ? 0 : 1;
+    }
+  } else {
+    if (product.low <= 1 && -4 <= exponent && exponent <= 23 && (adjusted.mantissa & 3) == 1 &&
+        (adjusted.mantissa << shift) == product.high)
+      adjusted.mantissa &= ~1ull;
+    adjusted.mantissa += adjusted.mantissa & 1;
+    adjusted.mantissa >>= 1;
+    if (adjusted.mantissa >= 2ull << 52) {
+      adjusted.mantissa = 1ull << 52;
+      ++adjusted.power2;
+    }
+    adjusted.mantissa &= ~(1ull << 52);
+    if (adjusted.power2 >= 0x7ff)
+      adjusted = {0, 0x7ff};
+  }
+
+  uint64_t bits = adjusted.mantissa | (uint64_t)adjusted.power2 << 52 | (uint64_t)negative << 63;
+  memcpy(pValue, &bits, sizeof(bits));
+  return true;
+}
+
+}  // namespace fast_decimal
+
 static int ClampExponent(long long value)
 {
   const int limit = INT_MAX / 2;
@@ -2514,13 +2530,57 @@ static int ClampExponent(long long value)
   return value;
 }
 
-///////////////////////////////////////////////////////
-// StringToDouble
-//  Parses one decimal directly with scratch space in the arena tail.
-///////////////////////////////////////////////////////
-static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+// Converts short decimals with one correctly rounded binary64 operation. The
+// operands are exact integers, so this is architecture-independent on the
+// library's x86-64 and ARM64 targets. Other inputs continue through DiyFp.
+static bool TryShortDecimal(uint64_t significand, int exponent, double* pValue)
 {
-  static constexpr int MaxSignificantDigits = 772;
+  static constexpr uint64_t PowersOfTen[] = {
+    1ull,
+    10ull,
+    100ull,
+    1000ull,
+    10000ull,
+    100000ull,
+    1000000ull,
+    10000000ull,
+    100000000ull,
+    1000000000ull,
+    10000000000ull,
+    100000000000ull,
+    1000000000000ull,
+    10000000000000ull,
+    100000000000000ull,
+    1000000000000000ull,
+    10000000000000000ull,
+    100000000000000000ull,
+    1000000000000000000ull,
+    10000000000000000000ull,
+  };
+  if (exponent < 0) {
+    int magnitude = -exponent;
+    if (magnitude > 15 || significand > 1ull << 53)
+      return false;
+    *pValue = (double)significand / (double)PowersOfTen[magnitude];
+    return true;
+  }
+  if (exponent >= (int)(sizeof(PowersOfTen) / sizeof(*PowersOfTen)) || significand > UINT64_MAX / PowersOfTen[exponent])
+    return false;
+  *pValue = (double)(significand * PowersOfTen[exponent]);
+  return true;
+}
+
+JSON_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigitCount, unsigned digit)
+{
+  if (*pDigitCount == 19)
+    return false;
+  *pSignificand = *pSignificand * 10 + digit;
+  ++*pDigitCount;
+  return true;
+}
+
+JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+{
   const char* pCursor = pStart;
   bool negative = false;
   if (pCursor < pEnd && *pCursor == '-') {
@@ -2529,6 +2589,94 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
   }
   if (pCursor == pEnd)
     return false;
+
+  uint64_t significand = 0;
+  int digitCount = 0;
+
+  if (*pCursor == '0') {
+    ++digitCount;
+    ++pCursor;
+    if (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9')
+      return false;
+  } else if ('1' <= *pCursor && *pCursor <= '9') {
+    do {
+      if (!AccumulateDecimalDigit(&significand, &digitCount, *pCursor++ - '0'))
+        return false;
+    } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
+  } else {
+    return false;
+  }
+
+  int exponent = 0;
+  if (pCursor < pEnd && *pCursor == '.') {
+    ++pCursor;
+    if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
+      return false;
+    do {
+      if (!AccumulateDecimalDigit(&significand, &digitCount, *pCursor++ - '0'))
+        return false;
+      --exponent;
+    } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
+  }
+
+  int explicitExponent = 0;
+  if (pCursor < pEnd && (*pCursor == 'e' || *pCursor == 'E')) {
+    ++pCursor;
+    bool exponentNegative = false;
+    if (pCursor < pEnd && (*pCursor == '+' || *pCursor == '-')) {
+      exponentNegative = *pCursor == '-';
+      ++pCursor;
+    }
+    if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
+      return false;
+    const int limit = INT_MAX / 2;
+    do {
+      int digit = *pCursor++ - '0';
+      explicitExponent = explicitExponent > (limit - digit) / 10 ? limit : explicitExponent * 10 + digit;
+    } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
+    if (exponentNegative)
+      explicitExponent = -explicitExponent;
+  }
+
+  exponent = ClampExponent((long long)exponent + explicitExponent);
+  if (!fast_decimal::Convert(significand, exponent, negative, pOutputValue)) {
+    if (!significand) {
+      *pOutputValue = negative ? -0.0 : 0.0;
+    } else {
+      double converted;
+      int significantDigits = 0;
+      for (uint64_t digits = significand; digits; digits /= 10)
+        ++significantDigits;
+      if (!double_conversion::StrtodFast(significand, significantDigits, significantDigits, false, exponent, &converted))
+        return false;
+      *pOutputValue = negative ? -converted : converted;
+    }
+  }
+  *ppOutputEnd = pCursor;
+  return true;
+}
+
+///////////////////////////////////////////////////////
+// StringToDouble
+//  Parses one decimal directly with scratch space in the buffer front.
+///////////////////////////////////////////////////////
+static constexpr int DoubleParseMaxSignificantDigits = 772;
+static constexpr size_t DoubleParseScratchCapacity = DoubleParseMaxSignificantDigits + 1 + alignof(double_conversion::Bignum::Chunk) - 1 +
+                                                     2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
+
+JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t back, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+{
+  using enum Json::Status;
+  if (TryFastDouble(pStart, pEnd, ppOutputEnd, pOutputValue))
+    return SUCCESS;
+  const char* pCursor = pStart;
+  bool negative = false;
+  if (pCursor < pEnd && *pCursor == '-') {
+    negative = true;
+    ++pCursor;
+  }
+  if (pCursor == pEnd)
+    return MALFORMED;
 
   const char* pInteger = pCursor;
   const char* pIntegerEnd;
@@ -2540,7 +2688,7 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
     } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
     pIntegerEnd = pCursor;
   } else {
-    return false;
+    return MALFORMED;
   }
 
   const char* pFraction = pCursor;
@@ -2548,7 +2696,7 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
   if (pCursor < pEnd && *pCursor == '.') {
     pFraction = ++pCursor;
     if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
-      return false;
+      return MALFORMED;
     do {
       ++pCursor;
     } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
@@ -2564,7 +2712,7 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
       ++pCursor;
     }
     if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
-      return false;
+      return MALFORMED;
     const int limit = INT_MAX / 2;
     do {
       int digit = *pCursor++ - '0';
@@ -2582,14 +2730,26 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
   int insignificantIntegerDigits = 0;
   int decimalExponent = 0;
   bool nonzeroDigitDropped = false;
+  uint64_t fastSignificand = 0;
+  int fastReadDigits = 0;
+  int firstFastDroppedDigit = 0;
+  auto recordFastDigit = [&](char digit) {
+    if (fastSignificand <= UINT64_MAX / 10 - 1) {
+      fastSignificand = fastSignificand * 10 + digit - '0';
+      ++fastReadDigits;
+    } else if (!firstFastDroppedDigit) {
+      firstFastDroppedDigit = digit;
+    }
+  };
 
   const char* pScan = pInteger;
   if (pScan < pIntegerEnd && *pScan == '0')
     ++pScan;
   for (; pScan < pIntegerEnd; ++pScan) {
-    if (significantDigits < MaxSignificantDigits) {
+    if (significantDigits < DoubleParseMaxSignificantDigits) {
       ++significantDigits;
       trailingZeroes = *pScan == '0' ? trailingZeroes + 1 : 0;
+      recordFastDigit(*pScan);
     } else {
       if (insignificantIntegerDigits < INT_MAX / 2)
         ++insignificantIntegerDigits;
@@ -2605,16 +2765,27 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
     }
   }
   for (; pScan < pFractionEnd; ++pScan) {
-    if (significantDigits < MaxSignificantDigits) {
+    if (significantDigits < DoubleParseMaxSignificantDigits) {
       ++significantDigits;
       decimalExponent = ClampExponent((long long)decimalExponent - 1);
       trailingZeroes = *pScan == '0' ? trailingZeroes + 1 : 0;
+      recordFastDigit(*pScan);
     } else {
       nonzeroDigitDropped |= *pScan != '0';
     }
   }
 
   decimalExponent = ClampExponent((long long)decimalExponent + insignificantIntegerDigits + explicitExponent);
+  if (significantDigits && !nonzeroDigitDropped) {
+    double converted;
+    bool roundUp = firstFastDroppedDigit >= '5';
+    bool convertedDirectly = fastReadDigits == significantDigits && TryShortDecimal(fastSignificand, decimalExponent, &converted);
+    if (convertedDirectly || double_conversion::StrtodFast(fastSignificand, fastReadDigits, significantDigits, roundUp, decimalExponent, &converted)) {
+      *ppOutputEnd = pCursor;
+      *pOutputValue = negative ? -converted : converted;
+      return SUCCESS;
+    }
+  }
   int keptDigits = significantDigits;
   if (nonzeroDigitDropped) {
     decimalExponent = ClampExponent((long long)decimalExponent - 1);
@@ -2625,10 +2796,11 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
   }
 
   int scratchSize = keptDigits + (nonzeroDigitDropped ? 1 : 0);
-  ArenaHeader* pHeader = (ArenaHeader*)arena.pBase;
-  JSN_REQUIRE(pHeader->used + (size_t)scratchSize <= pHeader->back,
-              "Arena has no room for number parsing scratch space.");
-  char* pDigits = arena.pBase + pHeader->used;
+  if (used + (size_t)scratchSize > back) {
+    JSON_WARN("JSON parse buffer has no room for number conversion scratch space.\n");
+    return INSUFFICIENT_SPACE;
+  }
+  char* pDigits = pBase + used;
   int digitPosition = 0;
 
   pScan = pInteger;
@@ -2650,13 +2822,15 @@ static bool StringToDouble(ArenaBuffer arena, const char* pStart, const char* pE
   if (digitPosition) {
     uintptr_t workspaceAddress = ((uintptr_t)(pDigits + scratchSize) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
     size_t workspaceSize = 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
-    JSN_REQUIRE(workspaceAddress + workspaceSize <= (uintptr_t)(arena.pBase + pHeader->back),
-                "Arena has no room for exact number conversion.");
-    converted = double_conversion::StrtodTrimmed(std::span<const char>(pDigits, digitPosition), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
+    if (workspaceAddress + workspaceSize > (uintptr_t)(pBase + back)) {
+      JSON_WARN("JSON parse buffer has no room for exact number conversion.\n");
+      return INSUFFICIENT_SPACE;
+    }
+    converted = double_conversion::StrtodTrimmed(JsonSpan<const char>(digitPosition, pDigits), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
   }
   *ppOutputEnd = pCursor;
   *pOutputValue = negative ? -converted : converted;
-  return true;
+  return SUCCESS;
 }
 
 static char* UnsignedLongToString(char* pOutput, unsigned long long value)
@@ -2685,7 +2859,7 @@ static char* LongToString(char* pOutput, long long value)
   return UnsignedLongToString(pOutput, magnitude);
 }
 
-static void WriteLong(OutputBuffer& buffer, long long value)
+template<typename Buffer> static void WriteLong(Buffer& buffer, long long value)
 {
   char* pOutput = buffer.Reserve(32);
   if (!pOutput)
@@ -2693,11 +2867,13 @@ static void WriteLong(OutputBuffer& buffer, long long value)
   buffer.Commit(LongToString(pOutput, value) - pOutput);
 }
 
+static void WriteLong(WritableFile& output, long long value) { output.WriteFormat("%lld", value); }
+
 ///////////////////////////////////////////////////////
 // WriteDouble
-//  Writes the shortest round-trippable number directly into the arena.
+//  Writes the shortest round-trippable number directly into the output sink.
 ///////////////////////////////////////////////////////
-static void WriteDouble(OutputBuffer& buffer, double value, bool single)
+template<typename Buffer> static void WriteDouble(Buffer& buffer, double value, bool single)
 {
   double_conversion::Double inspected(value);
   if (inspected.IsNan()) {
@@ -2710,9 +2886,16 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
     buffer.Append("1e5000");
     return;
   }
+  if (-0x1p63 <= value && value < 0x1p63) {
+    long long integer = (long long)value;
+    if ((double)integer == value) {
+      WriteLong(buffer, integer);
+      return;
+    }
+  }
 
-  // Shortest digits and all exact bignum workspace live in the uncommitted
-  // arena tail. This intentionally uses one universal conversion path.
+  // Shortest digits and exact bignum workspace live in the sink's uncommitted
+  // conversion scratch. This intentionally uses one universal conversion path.
   char* pOutput = buffer.Reserve(32);
   if (!pOutput)
     return;
@@ -2726,7 +2909,7 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
     length = 1;
     point = 1;
   } else {
-    std::span<char> digits(pOutput, 18);
+    JsonSpan<char> digits(18, pOutput);
     uintptr_t workspaceAddress = ((uintptr_t)(pOutput + 32) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
     size_t workspaceSize = 4 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
     if (!buffer.Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize))
@@ -2773,148 +2956,167 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
   buffer.Commit(length);
 }
 
+static void WriteExponent(WritableFile& output, unsigned int magnitude)
+{
+  if (magnitude >= 100)
+    output.Add(magnitude / 100 + '0');
+  if (magnitude >= 10)
+    output.Add((magnitude / 10) % 10 + '0');
+  output.Add(magnitude % 10 + '0');
+}
+
+static void WriteDouble(WritableFile& output, double value, bool single)
+{
+  double_conversion::Double inspected(value);
+  if (inspected.IsNan()) {
+    output.Append("null");
+    return;
+  }
+  if (inspected.IsInfinite()) {
+    if (value < 0)
+      output.Add('-');
+    output.Append("1e5000");
+    return;
+  }
+  if (-0x1p63 <= value && value < 0x1p63) {
+    long long integer = (long long)value;
+    if ((double)integer == value) {
+      WriteLong(output, integer);
+      return;
+    }
+  }
+
+  bool negative = inspected.Sign() < 0;
+  if (negative)
+    value = -value;
+
+  char digits[18];
+  int length;
+  int point;
+  if (value == 0) {
+    digits[0] = '0';
+    length = 1;
+    point = 1;
+  } else {
+    double_conversion::Bignum::Chunk workspace[4 * double_conversion::Bignum::BigitCapacity];
+    double_conversion::BignumDtoa(value, single, workspace, JsonSpan<char>(sizeof(digits), digits), &length, &point);
+  }
+
+  if (negative && value != 0.0)
+    output.Add('-');
+
+  int exponent = point - 1;
+  if (-6 <= exponent && exponent < 21) {
+    if (point <= 0) {
+      output.Append("0.");
+      for (int i = point; i < 0; ++i)
+        output.Add('0');
+      output.Append(digits, length);
+    } else if (point >= length) {
+      output.Append(digits, length);
+      for (int i = length; i < point; ++i)
+        output.Add('0');
+    } else {
+      output.Append(digits, point);
+      output.Add('.');
+      output.Append(digits + point, length - point);
+    }
+    return;
+  }
+
+  output.Add(digits[0]);
+  if (length > 1) {
+    output.Add('.');
+    output.Append(digits + 1, length - 1);
+  }
+  output.Add('e');
+  output.Add(exponent < 0 ? '-' : '+');
+  WriteExponent(output, exponent < 0 ? -exponent : exponent);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable value access
 ////////////////////////////////////////////////////////////////////////////////
-
-const char* Json::GetString() const
-{
-  JSN_REQUIRE(IsString(), "JSON value is not a string.");
-  const PackedString* pString = (const PackedString*)((const char*)this + stringOffset);
-  return (const char*)pString + pString->dataOffset;
-}
-
-size_t Json::GetSize() const
-{
-  switch (type)
-  {
-    case TYPE_STRING:
-      return ((const PackedString*)((const char*)this + stringOffset))->size;
-    case TYPE_ARRAY:
-      return ((const ArrayIndex*)((const char*)this + arrayOffset))->size;
-    case TYPE_OBJECT:
-      return ((const ObjectIndex*)((const char*)this + objectOffset))->size;
-    default:
-      JSN_PANIC("JSON value has no size.");
-  }
-}
-
-double Json::GetNumber() const
-{
-  switch (type)
-  {
-    case TYPE_LONG:
-      return longValue;
-    case TYPE_FLOAT:
-      return floatValue;
-    case TYPE_DOUBLE:
-      return doubleValue;
-    default:
-      JSN_PANIC("JSON value is not a number.");
-  }
-}
-
-long long Json::GetLong() const
-{
-  switch (type)
-  {
-    case TYPE_LONG:
-      return longValue;
-    default:
-      JSN_PANIC("JSON value is not a long.");
-  }
-}
-
-bool Json::GetBool() const
-{
-  switch (type)
-  {
-    case TYPE_BOOL:
-      return boolValue;
-    default:
-      JSN_PANIC("JSON value is not a bool.");
-  }
-}
-
-float Json::GetFloat() const
-{
-  switch (type)
-  {
-    case TYPE_FLOAT:
-      return floatValue;
-    case TYPE_DOUBLE:
-      return doubleValue;
-    default:
-      JSN_PANIC("JSON value is not a floating-point number.");
-  }
-}
-
-double Json::GetDouble() const
-{
-  switch (type)
-  {
-    case TYPE_FLOAT:
-      return floatValue;
-    case TYPE_DOUBLE:
-      return doubleValue;
-    default:
-      JSN_PANIC("JSON value is not a floating-point number.");
-  }
-}
 
 ///////////////////////////////////////////////////////
 // Json::Contains
 //  Finds an object key through its immutable hash index.
 ///////////////////////////////////////////////////////
-bool Json::Contains(std::span<const char> key) const
+bool Json::Contains(JsonString key) const
 {
   if (!IsObject())
     return false;
   const ObjectIndex* pObject = (const ObjectIndex*)((const char*)this + objectOffset);
-  u32 hash = Hash32(key.data(), key.size());
-  for (u32 i = 0; i < pObject->size; ++i) {
-    const ObjectEntry& entry = pObject->Entries()[i];
-    const PackedString* pName = (const PackedString*)((const char*)pObject + entry.keyOffset);
-    if (entry.hash == hash && pName->size == key.size() && !memcmp((const char*)pName + pName->dataOffset, key.data(), key.size()))
+  u32 hash = Hash32(key);
+  if (!pObject->bucketCount) {
+    for (u32 i = 0; i < objectSize; ++i) {
+      const ObjectEntry& entry = pObject->Entries()[i];
+      const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
+      JsonString name = pName->GetString();
+      if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
+        return true;
+    }
+    return false;
+  }
+  u32 bucket = hash & (pObject->bucketCount - 1);
+  for (u32 probe = 0; probe < pObject->bucketCount; ++probe) {
+    u32 entryIndex = pObject->Buckets(objectSize)[bucket];
+    if (entryIndex == UINT32_MAX)
+      return false;
+    const ObjectEntry& entry = pObject->Entries()[entryIndex];
+    const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
+    JsonString name = pName->GetString();
+    if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
       return true;
+    bucket = (bucket + 1) & (pObject->bucketCount - 1);
   }
   return false;
 }
 
-const Json& Json::operator[](size_t index) const
+const Json& Json::operator[](JsonString key) const
 {
-  JSN_REQUIRE(IsArray(), "JSON value is not an array.");
-  const ArrayIndex& array = *(const ArrayIndex*)((const char*)this + arrayOffset);
-  JSN_REQUIRE(index < array.size, "JSON index %zu is outside array of size %u.", index, array.size);
-  return *(const Json*)((const char*)&array + array.Offsets()[index]);
-}
-
-const Json& Json::operator[](std::span<const char> key) const
-{
-  JSN_REQUIRE(IsObject(), "JSON value is not an object.");
+  JSON_ASSERT(IsObject(), "JSON value is not an object.");
   const ObjectIndex* pObject = (const ObjectIndex*)((const char*)this + objectOffset);
-  u32 hash = Hash32(key.data(), key.size());
-  for (u32 i = 0; i < pObject->size; ++i) {
-    const ObjectEntry& entry = pObject->Entries()[i];
-    const PackedString* pName = (const PackedString*)((const char*)pObject + entry.keyOffset);
-    if (entry.hash == hash && pName->size == key.size() && !memcmp((const char*)pName + pName->dataOffset, key.data(), key.size()))
-      return *(const Json*)((const char*)pObject + entry.valueOffset);
+  u32 hash = Hash32(key);
+  if (!pObject->bucketCount) {
+    for (u32 i = 0; i < objectSize; ++i) {
+      const ObjectEntry& entry = pObject->Entries()[i];
+      const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
+      JsonString name = pName->GetString();
+      if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
+        return *(const Json*)((const char*)pObject + entry.valueOffset);
+    }
+    JSON_ASSERT(false, "JSON object does not contain requested key.");
+    __builtin_unreachable();
   }
-  JSN_PANIC("JSON object does not contain requested key.");
+  u32 bucket = hash & (pObject->bucketCount - 1);
+  for (u32 probe = 0; probe < pObject->bucketCount; ++probe) {
+    u32 entryIndex = pObject->Buckets(objectSize)[bucket];
+    if (entryIndex == UINT32_MAX)
+      break;
+    const ObjectEntry& entry = pObject->Entries()[entryIndex];
+    const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
+    JsonString name = pName->GetString();
+    if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
+      return *(const Json*)((const char*)pObject + entry.valueOffset);
+    bucket = (bucket + 1) & (pObject->bucketCount - 1);
+  }
+  JSON_ASSERT(false, "JSON object does not contain requested key.");
+  __builtin_unreachable();
 }
 
-Json::Status Json::ToString(ArenaBuffer output, const char** ppText) const
+Json::Status Json::ToString(JsonSpan<char> output) const
 {
   OutputBuffer buffer(output);
   MarshalJson(*this, buffer, false, 0);
-  return buffer.Finish(nullptr, ppText);
+  return buffer.Finish();
 }
 
-Json::Status Json::ToStringPretty(ArenaBuffer output, const char** ppText) const
+Json::Status Json::ToStringPretty(JsonSpan<char> output) const
 {
   OutputBuffer buffer(output);
   MarshalJson(*this, buffer, true, 0);
-  return buffer.Finish(nullptr, ppText);
+  return buffer.Finish();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2923,25 +3125,21 @@ Json::Status Json::ToStringPretty(ArenaBuffer output, const char** ppText) const
 
 ///////////////////////////////////////////////////////
 // MarshalJson
-//  Serializes an immutable parsed node into the arena output tail.
+//  Serializes an immutable parsed node directly into caller-owned output.
 ///////////////////////////////////////////////////////
-static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent)
+template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, bool pretty, int indent)
 {
   switch (value.type)
   {
     case Json::TYPE_NULL:
       buffer.Append("null");
       break;
-    case Json::TYPE_STRING: {
-      const PackedString* pString = (const PackedString*)((const char*)&value + value.stringOffset);
-      WriteJsonString(buffer, (const char*)pString + pString->dataOffset, pString->size);
+    case Json::TYPE_STRING:
+      WriteJsonString(buffer, value.GetString());
       break;
-    }
     case Json::TYPE_BOOL:
-      if (value.boolValue)
-        buffer.Append("true");
-      else
-        buffer.Append("false");
+      if (value.boolValue) buffer.Append("true");
+      else                 buffer.Append("false");
       break;
     case Json::TYPE_LONG:
       WriteLong(buffer, value.longValue);
@@ -2953,16 +3151,15 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
       WriteDouble(buffer, value.doubleValue, false);
       break;
     case Json::TYPE_ARRAY: {
-      const ArrayIndex& array = *(const ArrayIndex*)((const char*)&value + value.arrayOffset);
       buffer.Add('[');
-      for (u32 i = 0; i < array.size; ++i) {
+      u32 size = value.arraySize & Json::ArraySizeMask;
+      for (u32 i = 0; i < size; ++i) {
         if (i) {
           buffer.Add(',');
           if (pretty)
             buffer.Add(' ');
         }
-        const Json& child = *(const Json*)((const char*)&array + array.Offsets()[i]);
-        MarshalJson(child, buffer, pretty, indent);
+        MarshalJson(value[(size_t)i], buffer, pretty, indent);
       }
       buffer.Add(']');
       break;
@@ -2970,27 +3167,25 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
     case Json::TYPE_OBJECT: {
       const ObjectIndex& object = *(const ObjectIndex*)((const char*)&value + value.objectOffset);
       buffer.Add('{');
-      for (u32 i = 0; i < object.size; ++i) {
-        if (i)
-          buffer.Add(',');
-        if (pretty && object.size > 1) {
+      for (u32 i = 0; i < value.objectSize; ++i) {
+        if (i) buffer.Add(',');
+        if (pretty && value.objectSize > 1) {
           buffer.Add('\n');
           ++indent;
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
             buffer.Append("  ");
         }
         const ObjectEntry& entry = object.Entries()[i];
-        const PackedString* pName = (const PackedString*)((const char*)&object + entry.keyOffset);
-        WriteJsonString(buffer, (const char*)pName + pName->dataOffset, pName->size);
+        const Json* pName = (const Json*)((const char*)&object + entry.keyOffset);
+        WriteJsonString(buffer, pName->GetString());
         buffer.Add(':');
-        if (pretty)
-          buffer.Add(' ');
+        if (pretty) buffer.Add(' ');
         const Json& child = *(const Json*)((const char*)&object + entry.valueOffset);
         MarshalJson(child, buffer, pretty, indent);
-        if (pretty && object.size > 1)
+        if (pretty && value.objectSize > 1)
           --indent;
       }
-      if (pretty && object.size > 1) {
+      if (pretty && value.objectSize > 1) {
         buffer.Add('\n');
         for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
           buffer.Append("  ");
@@ -3000,14 +3195,28 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
       break;
     }
     default:
-      JSN_PANIC("Unhandled JSON type.");
+      JSON_PANIC("Unhandled JSON type.");
   }
 }
 
-static void WriteJsonString(OutputBuffer& buffer, const char* pData, size_t size)
+template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString string)
 {
+  const char* pData = string.pData;
+  size_t size = string.size;
+  size_t plainSize = 0;
+  while (plainSize < size) {
+    unsigned char value = pData[plainSize];
+    if (value < 0x20 || value >= 0x80 || value == '"' || value == '\\' || value == '/')
+      break;
+    ++plainSize;
+  }
+  if (plainSize == size) {
+    buffer.AppendQuoted(pData, size);
+    return;
+  }
+
   buffer.Add('"');
-  WriteEscapedString(buffer, pData, size);
+  WriteEscapedString(buffer, string);
   buffer.Add('"');
 }
 
@@ -3015,8 +3224,10 @@ static void WriteJsonString(OutputBuffer& buffer, const char* pData, size_t size
 // WriteEscapedString
 //  Escapes a bounded UTF-8 string into JSON syntax.
 ///////////////////////////////////////////////////////
-static void WriteEscapedString(OutputBuffer& buffer, const char* pData, size_t size)
+template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonString string)
 {
+  const char* pData = string.pData;
+  size_t size = string.size;
   for (size_t offset = 0; offset < size;) {
     wint_t codePoint = pData[offset++] & 255;
     if (codePoint >= 0300) {
@@ -3077,7 +3288,7 @@ static void WriteEscapedString(OutputBuffer& buffer, const char* pData, size_t s
         break;
       }
       default:
-        JSN_PANIC("Unhandled character escape code during string serialization.");
+        JSON_PANIC("Unhandled character escape code during string serialization.");
     }
   }
 }
@@ -3086,7 +3297,7 @@ static void WriteEscapedString(OutputBuffer& buffer, const char* pData, size_t s
 // MarshalValue
 //  Serializes an initializer-list value tree without intermediate storage.
 ///////////////////////////////////////////////////////
-static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pretty, int indent)
+template<typename Buffer> static void MarshalValue(const JsonValue& value, Buffer& buffer, bool pretty, int indent)
 {
   switch (value.type)
   {
@@ -3109,7 +3320,7 @@ static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pret
       WriteDouble(buffer, value.doubleValue, false);
       break;
     case JsonValue::TYPE_STRING:
-      WriteJsonString(buffer, value.stringValue.pData, value.stringValue.size);
+      WriteJsonString(buffer, value.stringValue);
       break;
     case JsonValue::TYPE_ARRAY: {
       const JsonValue* pValues = (const JsonValue*)value.listValue.pData;
@@ -3137,7 +3348,7 @@ static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pret
           for (int indentationIndex = 0; indentationIndex < indent + 1; ++indentationIndex)
             buffer.Append("  ");
         }
-        WriteJsonString(buffer, pMembers[i].key.data(), pMembers[i].key.size());
+        WriteJsonString(buffer, pMembers[i].key);
         buffer.Add(':');
         if (pretty)
           buffer.Add(' ');
@@ -3152,110 +3363,162 @@ static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pret
       break;
     }
     default:
-      JSN_PANIC("Unhandled JSON write type.");
+      JSON_PANIC("Unhandled JSON write type.");
   }
 }
 
-Json::Status WriteJson(const JsonValue& value, ArenaBuffer output, const char** ppText)
+Json::Status WriteJson(const JsonValue& value, JsonSpan<char> output)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, false, 0);
-  return buffer.Finish(nullptr, ppText);
+  return buffer.Finish();
 }
 
-Json::Status WriteJsonPretty(const JsonValue& value, ArenaBuffer output, const char** ppText)
+Json::Status WriteJsonPretty(const JsonValue& value, JsonSpan<char> output)
 {
   OutputBuffer buffer(output);
   MarshalValue(value, buffer, true, 0);
-  return buffer.Finish(nullptr, ppText);
+  return buffer.Finish();
 }
 
-Json::Status WriteJson(const JsonValue& value, std::span<char> output, const char** ppText)
+Json::Status WriteJson(const Json& value, JsonSpan<char> output) { return value.ToString(output); }
+
+Json::Status WriteJsonPretty(const Json& value, JsonSpan<char> output) { return value.ToStringPretty(output); }
+
+Json::Status WriteJson(const JsonValue& value, WritableFile& output)
 {
-  OutputBuffer buffer(output);
-  MarshalValue(value, buffer, false, 0);
-  return buffer.Finish(nullptr, ppText);
+  if (!output.IsValid()) {
+    JSON_WARN("Cannot write JSON to an invalid file.\n");
+    return Json::IO_ERROR;
+  }
+  MarshalValue(value, output, false, 0);
+  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
-Json::Status WriteJsonPretty(const JsonValue& value, std::span<char> output, const char** ppText)
+Json::Status WriteJsonPretty(const JsonValue& value, WritableFile& output)
 {
-  OutputBuffer buffer(output);
-  MarshalValue(value, buffer, true, 0);
-  return buffer.Finish(nullptr, ppText);
+  if (!output.IsValid()) {
+    JSON_WARN("Cannot write JSON to an invalid file.\n");
+    return Json::IO_ERROR;
+  }
+  MarshalValue(value, output, true, 0);
+  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
-Json::Status WriteJson(const Json& value, ArenaBuffer output, const char** ppText) { return value.ToString(output, ppText); }
-
-Json::Status WriteJsonPretty(const Json& value, ArenaBuffer output, const char** ppText) { return value.ToStringPretty(output, ppText); }
-
-Json::Status WriteJson(const Json& value, std::span<char> output, const char** ppText)
+Json::Status WriteJson(const Json& value, WritableFile& output)
 {
-  OutputBuffer buffer(output);
-  MarshalJson(value, buffer, false, 0);
-  return buffer.Finish(nullptr, ppText);
+  if (!output.IsValid()) {
+    JSON_WARN("Cannot write JSON to an invalid file.\n");
+    return Json::IO_ERROR;
+  }
+  MarshalJson(value, output, false, 0);
+  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
-Json::Status WriteJsonPretty(const Json& value, std::span<char> output, const char** ppText)
+Json::Status WriteJsonPretty(const Json& value, WritableFile& output)
 {
-  OutputBuffer buffer(output);
-  MarshalJson(value, buffer, true, 0);
-  return buffer.Finish(nullptr, ppText);
+  if (!output.IsValid()) {
+    JSON_WARN("Cannot write JSON to an invalid file.\n");
+    return Json::IO_ERROR;
+  }
+  MarshalJson(value, output, true, 0);
+  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
-template<typename Value>
-static Json::Status WriteMappedJson(const Value& value, MappedBuffer& output, bool pretty, const char** ppText)
-{
-  JSN_REQUIRE(output.mapped && output._writable && output.cursor <= output.size,
-              "MappedBuffer is not valid writable output.");
-  size_t byteCount = 0;
-  std::span<char> remaining((char*)output.mapped + output.cursor, output.size - output.cursor);
-  OutputBuffer buffer(remaining);
-  if constexpr (std::is_same_v<Value, JsonValue>)
-    MarshalValue(value, buffer, pretty, 0);
-  else
-    MarshalJson(value, buffer, pretty, 0);
-  Json::Status status = buffer.Finish(&byteCount, ppText);
-  if (status == Json::SUCCESS)
-    output.cursor += byteCount;
-  return status;
-}
+Json::Status WriteJson(const JsonValue& value, WritableFile&& output) { return WriteJson(value, output); }
 
-Json::Status WriteJson(const JsonValue& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, false, ppText); }
+Json::Status WriteJsonPretty(const JsonValue& value, WritableFile&& output) { return WriteJsonPretty(value, output); }
 
-Json::Status WriteJsonPretty(const JsonValue& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, true, ppText); }
+Json::Status WriteJson(const Json& value, WritableFile&& output) { return WriteJson(value, output); }
 
-Json::Status WriteJson(const Json& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, false, ppText); }
-
-Json::Status WriteJsonPretty(const Json& value, MappedBuffer& output, const char** ppText) { return WriteMappedJson(value, output, true, ppText); }
+Json::Status WriteJsonPretty(const Json& value, WritableFile&& output) { return WriteJsonPretty(value, output); }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable backward parser
 ////////////////////////////////////////////////////////////////////////////////
 
-static u32 StoreNode(ArenaBuffer arena, Json node, size_t subtreeEnd)
+JSON_INLINE static Json::Status StoreNode(char* pBase, size_t used, size_t& back, Json node, size_t subtreeEnd, u32* pNodeOffset)
 {
-  u32 offset = BackAlloc(arena, sizeof(Json), alignof(Json));
-  JSN_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
+  u32 offset = BackAlloc(back, used, sizeof(Json), alignof(Json));
+  if (offset == InvalidOffset)
+    return Json::INSUFFICIENT_SPACE;
+  JSON_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
   node.span = (u32)(subtreeEnd - offset);
   switch (node.type)
   {
     case Json::TYPE_STRING:
-      JSN_ASSERT(node.stringOffset >= offset);
+      JSON_ASSERT(node.stringOffset >= offset);
       node.stringOffset -= offset;
       break;
     case Json::TYPE_ARRAY:
-      JSN_ASSERT(node.arrayOffset >= offset);
+      JSON_ASSERT(node.arrayOffset >= offset);
       node.arrayOffset -= offset;
       break;
     case Json::TYPE_OBJECT:
-      JSN_ASSERT(node.objectOffset >= offset);
+      JSON_ASSERT(node.objectOffset >= offset);
       node.objectOffset -= offset;
       break;
     default:
       break;
   }
-  new (arena.pBase + offset) Json(node);
-  return offset;
+  new (pBase + offset) Json(node);
+  *pNodeOffset = offset;
+  return Json::SUCCESS;
+}
+
+JSON_INLINE static Json::Status ParseNumberNode(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd)
+{
+  using enum Json::Status;
+  using enum Json::Type;
+  size_t subtreeEnd = back;
+  const char* pStart = pCursor;
+  int sign = 1;
+  if (pCursor < pEnd && *pCursor == '-') {
+    sign = -1;
+    ++pCursor;
+  }
+  if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
+    return MALFORMED;
+
+  Json node;
+  unsigned long long magnitude = 0;
+  unsigned long long limit = sign < 0 ? 1ull << 63 : LLONG_MAX;
+  if (*pCursor == '0') {
+    ++pCursor;
+    if (pCursor < pEnd && (*pCursor == '.' || *pCursor == 'e' || *pCursor == 'E'))
+      goto UseDouble;
+    node.type = TYPE_LONG;
+    node.longValue = 0;
+    return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+  }
+
+  magnitude = *pCursor++ - '0';
+  while (pCursor < pEnd) {
+    unsigned character = *pCursor & 255;
+    if ('0' <= character && character <= '9') {
+      unsigned digit = character - '0';
+      if (magnitude > (limit - digit) / 10)
+        goto UseDouble;
+      magnitude = magnitude * 10 + digit;
+      ++pCursor;
+    } else if (character == '.' || character == 'e' || character == 'E') {
+      goto UseDouble;
+    } else {
+      break;
+    }
+  }
+  node.type = TYPE_LONG;
+  node.longValue = sign < 0 ? magnitude == 1ull << 63 ? LLONG_MIN : -(long long)magnitude : (long long)magnitude;
+  return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+
+UseDouble:
+  node.type = TYPE_DOUBLE;
+  const char* pNumberEnd;
+  Json::Status status = StringToDouble(pBase, used, back, pStart, pEnd, &pNumberEnd, &node.doubleValue);
+  if (status != SUCCESS)
+    return status;
+  pCursor = pNumberEnd;
+  return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
 }
 
 static void ReverseBytes(char* pData, size_t size)
@@ -3306,21 +3569,66 @@ static size_t JsonUtf8SequenceLength(const char* pStart, const char* pEnd)
   return 0;
 }
 
+static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
+{
+  const char* pCursor = pStart;
+  auto isPlainAscii = [](unsigned byte) { return byte >= 0x20 && byte < 0x80 && byte != '"' && byte != '\\'; };
+  while (pEnd - pCursor >= 4) {
+    if (!isPlainAscii(pCursor[0] & 255))
+      break;
+    if (!isPlainAscii(pCursor[1] & 255)) {
+      pCursor += 1;
+      break;
+    }
+    if (!isPlainAscii(pCursor[2] & 255)) {
+      pCursor += 2;
+      break;
+    }
+    if (!isPlainAscii(pCursor[3] & 255)) {
+      pCursor += 3;
+      break;
+    }
+    pCursor += 4;
+  }
+  while (pCursor < pEnd) {
+    unsigned byte = *pCursor & 255;
+    if (byte == '"')
+      return pCursor;
+    if (byte == '\\' || byte < 0x20)
+      return nullptr;
+    if (byte >= 0x80)
+      break;
+    ++pCursor;
+  }
+  while (pCursor < pEnd) {
+    unsigned byte = *pCursor & 255;
+    if (byte == '"')
+      return pCursor;
+    if (byte == '\\' || byte < 0x20)
+      return nullptr;
+    size_t length = JsonUtf8SequenceLength(pCursor, pEnd);
+    if (!length)
+      return nullptr;
+    pCursor += length;
+  }
+  return nullptr;
+}
+
 ///////////////////////////////////////////////////////
 // ParseJson
-//  Parses one subtree backward into immutable arena records.
+//  Parses one subtree backward into immutable buffer records.
 ///////////////////////////////////////////////////////
-static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& pCursor, const char* pEnd, int context, int depth)
+[[gnu::flatten]] static Json::Status ParseJsonRecursive(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int context, int depth)
 {
   using enum Json::Status;
   using enum Json::Type;
   char encodedBytes[Utf8MaximumSequenceSize];
-  long long integerValue;
+  unsigned long long integerMagnitude, integerLimit;
   const char* pNumberStart;
   int hexA, hexB, hexC, hexD, character, sign, byteCount, lowSurrogate;
   if (!depth)
     return MALFORMED;
-  size_t subtreeEnd = ((ArenaHeader*)arena.pBase)->back;
+  size_t subtreeEnd = back;
   Json node;
   for (pNumberStart = pCursor, sign = +1; pCursor < pEnd;) {
     switch ((character = *pCursor++ & 255))
@@ -3353,8 +3661,7 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
           return MALFORMED;
         if (pCursor + 3 <= pEnd && READ32LE(pCursor - 1) == READ32LE("null")) {
           pCursor += 3;
-          nodeOffset = StoreNode(arena, node, subtreeEnd);
-          return SUCCESS;
+          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
         }
         return MALFORMED;
 
@@ -3365,8 +3672,7 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
           pCursor += 4;
           node.type = TYPE_BOOL;
           node.boolValue = false;
-          nodeOffset = StoreNode(arena, node, subtreeEnd);
-          return SUCCESS;
+          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
         }
         return MALFORMED;
 
@@ -3377,8 +3683,7 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
           pCursor += 3;
           node.type = TYPE_BOOL;
           node.boolValue = true;
-          nodeOffset = StoreNode(arena, node, subtreeEnd);
-          return SUCCESS;
+          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
         }
         return MALFORMED;
 
@@ -3405,8 +3710,7 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
         }
         node.type = TYPE_LONG;
         node.longValue = 0;
-        nodeOffset = StoreNode(arena, node, subtreeEnd);
-        return SUCCESS;
+        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
 
       case '1':
       case '2':
@@ -3419,11 +3723,15 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
       case '9':
         if (context & (COLON | COMMA | KEY))
           return MALFORMED;
-        for (integerValue = (character - '0') * sign; pCursor < pEnd; ++pCursor) {
+        integerMagnitude = character - '0';
+        integerLimit = sign < 0 ? 1ull << 63 : LLONG_MAX;
+        for (; pCursor < pEnd; ++pCursor) {
           character = *pCursor & 255;
           if (isdigit(character)) {
-            if (ckd_mul(&integerValue, integerValue, 10) || ckd_add(&integerValue, integerValue, (character - '0') * sign))
+            unsigned digit = character - '0';
+            if (integerMagnitude > (integerLimit - digit) / 10)
               goto UseDouble;
+            integerMagnitude = integerMagnitude * 10 + digit;
           } else if (character == '.') {
             if (pCursor + 1 == pEnd || !isdigit(pCursor[1]))
               return MALFORMED;
@@ -3435,45 +3743,99 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
           }
         }
         node.type = TYPE_LONG;
-        node.longValue = integerValue;
-        nodeOffset = StoreNode(arena, node, subtreeEnd);
-        return SUCCESS;
+        if (sign < 0)
+          node.longValue = integerMagnitude == 1ull << 63 ? LLONG_MIN : -(long long)integerMagnitude;
+        else
+          node.longValue = integerMagnitude;
+        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
 
-      UseDouble:
+      UseDouble: {
         node.type = TYPE_DOUBLE;
         const char* pNumberEnd;
-        if (!StringToDouble(arena, pNumberStart, pEnd, &pNumberEnd, &node.doubleValue))
-          return MALFORMED;
+        Json::Status numberStatus = StringToDouble(pBase, used, back, pNumberStart, pEnd, &pNumberEnd, &node.doubleValue);
+        if (numberStatus != SUCCESS)
+          return numberStatus;
         pCursor = pNumberEnd;
-        nodeOffset = StoreNode(arena, node, subtreeEnd);
-        return SUCCESS;
+        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+      }
 
       case '[': {
         if (context & (COLON | COMMA | KEY))
           return MALFORMED;
         u32 elementCount = 0;
         u32 lastChildOffset = 0;
+        bool reversedScalarArray = true;
         for (context = ARRAY;;) {
           u32 childOffset;
-          Json::Status status = ParseJson(childOffset, arena, pCursor, pEnd, context, depth - 1);
+          Json::Status status;
+          const char* pNumber = pCursor;
+          while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
+            ++pNumber;
+          if (context & COMMA) {
+            if (pNumber < pEnd && *pNumber == ',') {
+              do {
+                ++pNumber;
+              } while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'));
+            } else {
+              pNumber = pEnd;
+            }
+          }
+          if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
+            pCursor = pNumber;
+            status = ParseNumberNode(childOffset, pBase, used, back, pCursor, pEnd);
+          } else {
+            status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+          }
           if (status == ABSENT_VALUE) {
-            size_t indexSize = sizeof(ArrayIndex) + (size_t)elementCount * sizeof(u32);
-            u32 indexOffset = BackAlloc(arena, indexSize, alignof(ArrayIndex));
-            ArrayIndex* pIndex = new (arena.pBase + indexOffset) ArrayIndex{elementCount};
+            if (elementCount && reversedScalarArray) {
+              node.type = TYPE_ARRAY;
+              node.arrayOffset = lastChildOffset;
+              node.arraySize = elementCount | Json::ReversedArrayFlag;
+              return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+            }
+            size_t arraySize = (size_t)elementCount * sizeof(Json);
+            u32 arrayOffset = BackAlloc(back, used, arraySize, alignof(Json));
+            if (arrayOffset == InvalidOffset)
+              return INSUFFICIENT_SPACE;
             u32 cursorOffset = lastChildOffset;
             for (u32 i = elementCount; i--;) {
-              JSN_ASSERT(cursorOffset >= indexOffset);
-              pIndex->Offsets()[i] = cursorOffset - indexOffset;
-              cursorOffset += ((const Json*)(arena.pBase + cursorOffset))->span;
+              const Json* pChild = (const Json*)(pBase + cursorOffset);
+              u32 childSpan = pChild->span;
+              u32 childOffset = arrayOffset + i * sizeof(Json);
+              JSON_ASSERT(cursorOffset >= childOffset);
+              u32 delta = cursorOffset - childOffset;
+              Json child = *pChild;
+              JSON_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
+              child.span += delta;
+              switch (child.type)
+              {
+                case TYPE_STRING:
+                  JSON_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
+                  child.stringOffset += delta;
+                  break;
+                case TYPE_ARRAY:
+                  JSON_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
+                  child.arrayOffset += delta;
+                  break;
+                case TYPE_OBJECT:
+                  JSON_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
+                  child.objectOffset += delta;
+                  break;
+                default:
+                  break;
+              }
+              new (pBase + childOffset) Json(child);
+              cursorOffset += childSpan;
             }
             node.type = TYPE_ARRAY;
-            node.arrayOffset = indexOffset;
-            nodeOffset = StoreNode(arena, node, subtreeEnd);
-            return SUCCESS;
+            node.arrayOffset = arrayOffset;
+            node.arraySize = elementCount;
+            return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
           }
           if (status != SUCCESS)
             return status;
           lastChildOffset = childOffset;
+          reversedScalarArray &= ((const Json*)(pBase + childOffset))->span == sizeof(Json);
           ++elementCount;
           context = ARRAY | COMMA;
         }
@@ -3492,41 +3854,63 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
         u32 lastValueOffset = 0;
         for (context = KEY | OBJECT;;) {
           u32 keyOffset;
-          Json::Status status = ParseJson(keyOffset, arena, pCursor, pEnd, context, depth - 1);
+          Json::Status status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
           if (status == ABSENT_VALUE) {
-            size_t indexSize = sizeof(ObjectIndex) + (size_t)memberCount * sizeof(ObjectEntry);
-            u32 indexOffset = BackAlloc(arena, indexSize, alignof(ObjectIndex));
-            ObjectIndex* pIndex = new (arena.pBase + indexOffset) ObjectIndex{memberCount};
+            u32 bucketCount = 0;
+            if (memberCount > 16) {
+              bucketCount = 1;
+              uint64_t requiredBuckets = (uint64_t)memberCount * 2;
+              while (bucketCount < requiredBuckets) {
+                if (bucketCount > UINT32_MAX / 2) {
+                  JSON_WARN("JSON object is too large to index.\n");
+                  return INSUFFICIENT_SPACE;
+                }
+                bucketCount *= 2;
+              }
+            }
+            size_t indexSize = sizeof(ObjectIndex) + (size_t)memberCount * sizeof(ObjectEntry) + (size_t)bucketCount * sizeof(u32);
+            u32 indexOffset = BackAlloc(back, used, indexSize, alignof(ObjectIndex));
+            if (indexOffset == InvalidOffset)
+              return INSUFFICIENT_SPACE;
+            ObjectIndex* pIndex = new (pBase + indexOffset) ObjectIndex{bucketCount};
+            if (bucketCount)
+              memset(pIndex->Buckets(memberCount), 0xff, (size_t)bucketCount * sizeof(u32));
             u32 cursorOffset = lastValueOffset;
             for (u32 i = memberCount; i--;) {
-              const Json* pValue = (const Json*)(arena.pBase + cursorOffset);
+              const Json* pValue = (const Json*)(pBase + cursorOffset);
               u32 valueOffset = cursorOffset;
               cursorOffset += pValue->span;
-              const Json* pKey = (const Json*)(arena.pBase + cursorOffset);
-              JSN_ASSERT(pKey->type == TYPE_STRING);
-              const PackedString* pName = (const PackedString*)((const char*)pKey + pKey->stringOffset);
-              u32 nameOffset = (u32)((const char*)pName - arena.pBase);
+              const Json* pKey = (const Json*)(pBase + cursorOffset);
+              JSON_ASSERT(pKey->type == TYPE_STRING);
               pIndex->Entries()[i] = {
-                Hash32((const char*)pName + pName->dataOffset, pName->size),
-                nameOffset - indexOffset,
+                Hash32(pKey->GetString()),
+                cursorOffset - indexOffset,
                 valueOffset - indexOffset,
               };
               cursorOffset += pKey->span;
             }
+            if (bucketCount) {
+              for (u32 i = 0; i < memberCount; ++i) {
+                u32 bucket = pIndex->Entries()[i].hash & (bucketCount - 1);
+                while (pIndex->Buckets(memberCount)[bucket] != UINT32_MAX)
+                  bucket = (bucket + 1) & (bucketCount - 1);
+                pIndex->Buckets(memberCount)[bucket] = i;
+              }
+            }
             node.type = TYPE_OBJECT;
             node.objectOffset = indexOffset;
-            nodeOffset = StoreNode(arena, node, subtreeEnd);
-            return SUCCESS;
+            node.objectSize = memberCount;
+            return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
           }
           if (status != SUCCESS)
             return status;
-          const Json* pKey = (const Json*)(arena.pBase + keyOffset);
+          const Json* pKey = (const Json*)(pBase + keyOffset);
           if (!pKey->IsString())
             return MALFORMED;
           u32 valueOffset;
-          status = ParseJson(valueOffset, arena, pCursor, pEnd, COLON, depth - 1);
+          status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
           if (status != SUCCESS)
-            return MALFORMED;
+            return status;
           lastValueOffset = valueOffset;
           ++memberCount;
           context = KEY | COMMA | OBJECT;
@@ -3536,13 +3920,35 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
       case '"': {
         if (context & (COLON | COMMA))
           return MALFORMED;
-        ArenaHeader* pHeader = (ArenaHeader*)arena.pBase;
-        u32 nullOffset = BackAlloc(arena, 1, 1);
-        arena.pBase[nullOffset] = '\0';
+        const char* pStringStart = pCursor;
+        if (const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd)) {
+          size_t size = pStringEnd - pStringStart;
+          u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+          if (stringOffset == InvalidOffset)
+            return INSUFFICIENT_SPACE;
+          memcpy(pBase + stringOffset, pStringStart, size);
+          pBase[stringOffset + size] = '\0';
+          pCursor = pStringEnd + 1;
+          node.type = TYPE_STRING;
+          node.stringOffset = stringOffset;
+          node.stringSize = (u32)size;
+          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+        }
+        u32 nullOffset = BackAlloc(back, used, 1, 1);
+        if (nullOffset == InvalidOffset)
+          return INSUFFICIENT_SPACE;
+        pBase[nullOffset] = '\0';
+        bool arenaFull = false;
         auto appendBytes = [&](const char* pSource, size_t size) {
           for (size_t i = 0; i < size; ++i) {
-            u32 offset = BackAlloc(arena, 1, 1);
-            arena.pBase[offset] = pSource[i];
+            if (arenaFull)
+              return;
+            u32 offset = BackAlloc(back, used, 1, 1);
+            if (offset == InvalidOffset) {
+              arenaFull = true;
+              return;
+            }
+            pBase[offset] = pSource[i];
           }
         };
         for (;;) {
@@ -3560,16 +3966,15 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
               break;
             }
             case '"': {
-              u32 dataOffset = (u32)pHeader->back;
+              if (arenaFull)
+                return INSUFFICIENT_SPACE;
+              u32 dataOffset = (u32)back;
               size_t size = nullOffset - dataOffset;
-              ReverseBytes(arena.pBase + dataOffset, size);
-              u32 stringOffset = BackAlloc(arena, sizeof(PackedString), alignof(PackedString));
-              JSN_ASSERT(dataOffset >= stringOffset);
-              new (arena.pBase + stringOffset) PackedString{(u32)size, dataOffset - stringOffset};
+              ReverseBytes(pBase + dataOffset, size);
               node.type = TYPE_STRING;
-              node.stringOffset = stringOffset;
-              nodeOffset = StoreNode(arena, node, subtreeEnd);
-              return SUCCESS;
+              node.stringOffset = dataOffset;
+              node.stringSize = (u32)size;
+              return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
             }
             case '\\':
               if (pCursor >= pEnd)
@@ -3641,6 +4046,8 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
               }
               break;
           }
+          if (arenaFull)
+            return INSUFFICIENT_SPACE;
         }
       }
 
@@ -3652,45 +4059,90 @@ static Json::Status ParseJson(u32& nodeOffset, ArenaBuffer arena, const char*& p
 }
 
 ///////////////////////////////////////////////////////
+// Json::EstimateSize
+//  Returns a deliberately loose upper bound without reading or parsing input.
+///////////////////////////////////////////////////////
+size_t Json::EstimateSize(const char* pData, size_t size)
+{
+  if (!pData && size) {
+    JSON_WARN("JSON size estimate input cannot be null when its size is nonzero.\n");
+    return SIZE_MAX;
+  }
+  if (!size)
+    return 0;
+
+  // Every value or key consumes at least one distinct input byte. In the
+  // worst case a value owns one node, one copied array slot, one aggregate
+  // header, and their alignment padding. A key owns one node, one object
+  // entry, at most four hash buckets, and node padding. Decoded strings plus
+  // terminators consume less space than their source tokens. These bounds are
+  // currently 53 bytes per value and 51 per key, plus one string byte.
+  constexpr uint64_t ValueBytes = 2 * sizeof(Json) + sizeof(ObjectIndex) + 2 * (alignof(Json) - 1) + alignof(ObjectIndex) - 1;
+  constexpr uint64_t KeyBytes = sizeof(Json) + sizeof(ObjectEntry) + 4 * sizeof(u32) + alignof(Json) - 1;
+  constexpr uint64_t BytesPerInputByte = 64;
+  static_assert((ValueBytes > KeyBytes ? ValueBytes : KeyBytes) + 1 <= BytesPerInputByte,
+                "JSON parse-size multiplier no longer covers the immutable layout.");
+
+  constexpr uint64_t MaximumBufferSize = UINT32_MAX - 1;
+  if (size > (MaximumBufferSize - DoubleParseScratchCapacity) / BytesPerInputByte)
+    return SIZE_MAX;
+  return (size_t)(size * BytesPerInputByte + DoubleParseScratchCapacity);
+}
+
+///////////////////////////////////////////////////////
 // ParseJson
 //  Parses one bounded JSON document and rolls back on failure.
 ///////////////////////////////////////////////////////
-static Json::Status ParseJson(const char* pData, size_t size, ArenaBuffer arena, const Json** ppJson)
+static Json::Status ParseJson(const char* pData, size_t size, JsonBuffer* pBuffer)
 {
   using enum Json::Status;
-  JSN_REQUIRE(arena.pBase, "JSON parse arena cannot be null.");
-  JSN_REQUIRE(ppJson, "JSON parse output pointer cannot be null.");
-  *ppJson = nullptr;
-  JSN_REQUIRE(pData || !size, "JSON input cannot be null when its size is nonzero.");
+  if (!pBuffer || !pBuffer->pData) {
+    JSON_WARN("JSON parse buffer cannot be null.\n");
+    return INVALID_ARGUMENT;
+  }
+  pBuffer->pRoot = nullptr;
+  if (!pData && size) {
+    JSON_WARN("JSON input cannot be null when its size is nonzero.\n");
+    return INVALID_ARGUMENT;
+  }
   if (!pData)
     return ABSENT_VALUE;
 
-  ArenaHeader* pHeader = (ArenaHeader*)arena.pBase;
-  size_t backMark = pHeader->back;
+  size_t backMark = pBuffer->back;
   const char* pCursor = pData;
   const char* pEnd = pData + size;
   u32 rootOffset = 0;
-  Json::Status status = ParseJson(rootOffset, arena, pCursor, pEnd, 0, DEPTH);
+  Json::Status status = ParseJsonRecursive(rootOffset, pBuffer->pData, pBuffer->used, pBuffer->back, pCursor, pEnd, 0, DEPTH);
   while (status == SUCCESS && pCursor < pEnd && (*pCursor == ' ' || *pCursor == '\n' || *pCursor == '\r' || *pCursor == '\t'))
     ++pCursor;
   if (status != SUCCESS || pCursor != pEnd) {
-    pHeader->back = backMark;
-    return MALFORMED;
+    pBuffer->back = backMark;
+    return status == INSUFFICIENT_SPACE ? status : MALFORMED;
   }
-  *ppJson = (const Json*)(arena.pBase + rootOffset);
+  pBuffer->pRoot = (const Json*)(pBuffer->pData + rootOffset);
   return SUCCESS;
 }
 
-Json::Status Json::Parse(const char* pData, size_t size, ArenaBuffer arena, const Json** ppJson) { return ParseJson(pData, size, arena, ppJson); }
+Json::Status Json::Parse(const char* pData, size_t size, JsonBuffer* pBuffer) { return ParseJson(pData, size, pBuffer); }
 
-Json::Status Json::Parse(const MappedBuffer& input, ArenaBuffer arena, const Json** ppJson)
+size_t Json::EstimateSize(const FileMap& input)
 {
-  JSN_REQUIRE(ppJson, "JSON parse output pointer cannot be null.");
   if (!input.IsValid()) {
-    *ppJson = nullptr;
-    return ABSENT_VALUE;
+    JSON_WARN("Cannot estimate JSON size from an invalid file mapping.\n");
+    return SIZE_MAX;
   }
-  return ParseJson((const char*)input.mapped, input.size, arena, ppJson);
+  return EstimateSize((const char*)input.data, input.size);
+}
+
+Json::Status Json::Parse(const FileMap& input, JsonBuffer* pBuffer)
+{
+  if (!input.IsValid()) {
+    if (pBuffer)
+      pBuffer->pRoot = nullptr;
+    JSON_WARN("Cannot parse JSON from an invalid file mapping.\n");
+    return IO_ERROR;
+  }
+  return Parse((const char*)input.data, input.size, pBuffer);
 }
 
 const char* Json::StatusToString(Status status)
@@ -3700,12 +4152,17 @@ const char* Json::StatusToString(Status status)
     case SUCCESS:
       return "success";
     case MALFORMED:
+      return "JSON is malformed.";
     case ABSENT_VALUE:
-      return "JSON Malformed. Cannot Parse.";
+      return "JSON input contains no value.";
+    case INVALID_ARGUMENT:
+      return "Invalid JSON API argument.";
     case INSUFFICIENT_SPACE:
-      return "JSON output buffer has insufficient space.";
+      return "JSON buffer has insufficient space.";
+    case IO_ERROR:
+      return "JSON file mapping failed.";
     default:
-      JSN_PANIC("Unhandled JSON status.");
+      JSON_PANIC("Unhandled JSON status.");
   }
 }
 
