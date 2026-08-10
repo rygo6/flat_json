@@ -288,25 +288,37 @@ writable_file_round_trip_test()
 void
 large_object_index_test()
 {
-    static constexpr char Text[] = R"({"key00":0,"key01":1,"key02":2,"key03":3,"key04":4,"key05":5,"key06":6,"key07":7,"key08":8,"key09":9,"key10":10,"key11":11,"key12":12,"key13":13,"key14":14,"key15":15,"target":31337})";
-    flat::FixedJsonBuffer<4096> arena;
-    if (Json::Parse(Text, &arena) != Json::SUCCESS)
+    char text[8192];
+    char* pCursor = text;
+    *pCursor++ = '{';
+    for (int key = 100; key >= 0; --key) {
+        size_t remaining = sizeof(text) - (size_t)(pCursor - text);
+        int count = snprintf(pCursor, remaining, "%s\"key%03d\":%d", key == 100 ? "" : ",", key, key);
+        if (count < 0 || (size_t)count >= remaining)
+            exit(55);
+        pCursor += count;
+    }
+    *pCursor++ = '}';
+    *pCursor = '\0';
+
+    flat::FixedJsonBuffer<32768> arena;
+    if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
         exit(55);
     const Json* pJson = arena.Root();
-    if (pJson->GetSize() != 17 ||
-        !pJson->Contains("key00") ||
-        !pJson->Contains("target") ||
+    if (pJson->GetSize() != 101 ||
+        !pJson->Contains("key100") ||
+        !pJson->Contains("key000") ||
         pJson->Contains("missing") ||
-        !pJson->HasKey("key00") ||
-        !pJson->HasKey("target") ||
+        !pJson->HasKey("key100") ||
+        !pJson->HasKey("key000") ||
         pJson->HasKey("missing") ||
-        (*pJson)["key00"].GetLong() != 0 ||
-        (*pJson)["key08"].GetLong() != 8 ||
-        (*pJson)["target"].GetLong() != 31337)
+        (*pJson)["key100"].GetLong() != 100 ||
+        (*pJson)["key050"].GetLong() != 50 ||
+        (*pJson)["key000"].GetLong() != 0)
         exit(55);
 
-    char output[4096];
-    if (pJson->ToString(output) != Json::SUCCESS || strcmp(output, Text))
+    char output[8192];
+    if (pJson->ToString(output) != Json::SUCCESS || strcmp(output, text))
         exit(56);
 }
 

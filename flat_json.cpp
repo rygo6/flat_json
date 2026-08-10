@@ -2058,48 +2058,6 @@ static constexpr size_t HexByteCount = 256;
 static constexpr size_t Utf8MaximumSequenceSize = 4;
 static constexpr size_t Utf16EscapeSize = 6;
 
-static u32 Hash32(JsonString key)
-{
-  const char* pKey = key.pData;
-  size_t length = key.size;
-  u32 hash = 0x9747b28c;
-  u32 word = 0;
-  size_t offset = 0;
-  while (offset + 4 <= length) {
-    memcpy(&word, pKey + offset, 4);
-    word *= 0xcc9e2d51u;
-    word = word << 15 | word >> 17;
-    word *= 0x1b873593u;
-    hash ^= word;
-    hash = hash << 13 | hash >> 19;
-    hash = hash * 5 + 0xe6546b64u;
-    offset += 4;
-  }
-  word = 0;
-  switch (length & 3)
-  {
-    case 3:
-      word ^= (u32)(unsigned char)pKey[offset + 2] << 16;
-      [[fallthrough]];
-    case 2:
-      word ^= (u32)(unsigned char)pKey[offset + 1] << 8;
-      [[fallthrough]];
-    case 1:
-      word ^= (u32)(unsigned char)pKey[offset];
-      word *= 0xcc9e2d51u;
-      word = word << 15 | word >> 17;
-      word *= 0x1b873593u;
-      hash ^= word;
-  }
-  hash ^= (u32)length;
-  hash ^= hash >> 16;
-  hash *= 0x85ebca6bu;
-  hash ^= hash >> 13;
-  hash *= 0xc2b2ae35u;
-  hash ^= hash >> 16;
-  return hash;
-}
-
 static constexpr u32 InvalidOffset = UINT32_MAX;
 
 JSON_INLINE static u32 BackAlloc(size_t& back, size_t used, size_t byteCount, size_t alignment = 8)
@@ -2123,17 +2081,24 @@ using ConstLike = std::conditional_t<std::is_const_v<std::remove_reference_t<Lik
 
 struct ObjectEntry
 {
-  u32 hash;
   u32 keyOffset;
   u32 valueOffset;
 };
 
-struct ObjectIndex
-{
-  u32 bucketCount;
-  auto Entries(this auto& self) { return (ConstLike<ObjectEntry, decltype(self)>*)(&self + 1); }
-  auto Buckets(this auto& self, u32 size) { return (ConstLike<u32, decltype(self)>*)(self.Entries() + size); }
-};
+// Match sajson's policy: scan through 100 members, then use binary search.
+static constexpr u32 ObjectBinarySearchThreshold = 100;
+
+template<typename Byte>
+JSON_INLINE static auto ObjectKeySizes(Byte* pIndex) { return (ConstLike<u32, Byte>*)pIndex; }
+
+template<typename Byte>
+JSON_INLINE static auto ObjectEntries(Byte* pIndex, u32 size) { return (ConstLike<ObjectEntry, Byte>*)(ObjectKeySizes(pIndex) + size); }
+
+template<typename Byte>
+JSON_INLINE static auto ObjectSortOrder(Byte* pIndex, u32 size) { return (ConstLike<u32, Byte>*)(ObjectEntries(pIndex, size) + size); }
+
+static_assert(sizeof(ObjectEntry) == 8);
+static_assert(alignof(ObjectEntry) == alignof(u32));
 
 ////////////////////////////////////////////////////////////////////////////////
 // Direct bounded output
@@ -3038,71 +3003,73 @@ static void WriteDouble(WritableFile& output, double value, bool single)
 // Immutable value access
 ////////////////////////////////////////////////////////////////////////////////
 
+JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString key)
+{
+  const char* pObject = (const char*)&object + object.objectOffset;
+  const u32* pKeySizes = ObjectKeySizes(pObject);
+  const ObjectEntry* pEntries = ObjectEntries(pObject, object.objectSize);
+  if (object.objectSize <= ObjectBinarySearchThreshold) {
+    for (u32 i = 0; i < object.objectSize; ++i) {
+      if (pKeySizes[i] != key.size)
+        continue;
+      const ObjectEntry& entry = pEntries[i];
+      const Json* pName = (const Json*)(pObject + entry.keyOffset);
+      if (!memcmp(pName->GetString().pData, key.pData, key.size))
+        return (const Json*)(pObject + entry.valueOffset);
+    }
+    return nullptr;
+  }
+
+  const u32* pOrder = ObjectSortOrder(pObject, object.objectSize);
+  u32 first = 0;
+  u32 last = object.objectSize;
+  while (first < last) {
+    u32 middle = first + (last - first) / 2;
+    u32 entryIndex = pOrder[middle];
+    u32 keySize = pKeySizes[entryIndex];
+    if (keySize < key.size) {
+      first = middle + 1;
+      continue;
+    }
+    if (keySize > key.size) {
+      last = middle;
+      continue;
+    }
+    const ObjectEntry& entry = pEntries[entryIndex];
+    const Json* pName = (const Json*)(pObject + entry.keyOffset);
+    int order = memcmp(pName->GetString().pData, key.pData, key.size);
+    if (order < 0)
+      first = middle + 1;
+    else
+      last = middle;
+  }
+  if (first == object.objectSize)
+    return nullptr;
+  u32 entryIndex = pOrder[first];
+  if (pKeySizes[entryIndex] != key.size)
+    return nullptr;
+  const ObjectEntry& entry = pEntries[entryIndex];
+  const Json* pName = (const Json*)(pObject + entry.keyOffset);
+  if (memcmp(pName->GetString().pData, key.pData, key.size))
+    return nullptr;
+  return (const Json*)(pObject + entry.valueOffset);
+}
+
 ///////////////////////////////////////////////////////
 // Json::Contains
-//  Finds an object key through its immutable hash index.
+//  Finds an object key through its immutable size scan or sorted index.
 ///////////////////////////////////////////////////////
 bool Json::Contains(JsonString key) const
 {
-  if (!IsObject())
-    return false;
-  const ObjectIndex* pObject = (const ObjectIndex*)((const char*)this + objectOffset);
-  u32 hash = Hash32(key);
-  if (!pObject->bucketCount) {
-    for (u32 i = 0; i < objectSize; ++i) {
-      const ObjectEntry& entry = pObject->Entries()[i];
-      const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
-      JsonString name = pName->GetString();
-      if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
-        return true;
-    }
-    return false;
-  }
-  u32 bucket = hash & (pObject->bucketCount - 1);
-  for (u32 probe = 0; probe < pObject->bucketCount; ++probe) {
-    u32 entryIndex = pObject->Buckets(objectSize)[bucket];
-    if (entryIndex == UINT32_MAX)
-      return false;
-    const ObjectEntry& entry = pObject->Entries()[entryIndex];
-    const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
-    JsonString name = pName->GetString();
-    if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
-      return true;
-    bucket = (bucket + 1) & (pObject->bucketCount - 1);
-  }
-  return false;
+  return IsObject() && FindObjectValue(*this, key);
 }
 
 const Json& Json::operator[](JsonString key) const
 {
   JSON_ASSERT(IsObject(), "JSON value is not an object.");
-  const ObjectIndex* pObject = (const ObjectIndex*)((const char*)this + objectOffset);
-  u32 hash = Hash32(key);
-  if (!pObject->bucketCount) {
-    for (u32 i = 0; i < objectSize; ++i) {
-      const ObjectEntry& entry = pObject->Entries()[i];
-      const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
-      JsonString name = pName->GetString();
-      if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
-        return *(const Json*)((const char*)pObject + entry.valueOffset);
-    }
-    JSON_ASSERT(false, "JSON object does not contain requested key.");
-    __builtin_unreachable();
-  }
-  u32 bucket = hash & (pObject->bucketCount - 1);
-  for (u32 probe = 0; probe < pObject->bucketCount; ++probe) {
-    u32 entryIndex = pObject->Buckets(objectSize)[bucket];
-    if (entryIndex == UINT32_MAX)
-      break;
-    const ObjectEntry& entry = pObject->Entries()[entryIndex];
-    const Json* pName = (const Json*)((const char*)pObject + entry.keyOffset);
-    JsonString name = pName->GetString();
-    if (entry.hash == hash && name.size == key.size && !memcmp(name.pData, key.pData, key.size))
-      return *(const Json*)((const char*)pObject + entry.valueOffset);
-    bucket = (bucket + 1) & (pObject->bucketCount - 1);
-  }
-  JSON_ASSERT(false, "JSON object does not contain requested key.");
-  __builtin_unreachable();
+  const Json* pValue = FindObjectValue(*this, key);
+  JSON_ASSERT(pValue, "JSON object does not contain requested key.");
+  return *pValue;
 }
 
 Json::Status Json::ToString(JsonSpan<char> output) const
@@ -3165,7 +3132,8 @@ template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buf
       break;
     }
     case Json::TYPE_OBJECT: {
-      const ObjectIndex& object = *(const ObjectIndex*)((const char*)&value + value.objectOffset);
+      const char* pObject = (const char*)&value + value.objectOffset;
+      const ObjectEntry* pEntries = ObjectEntries(pObject, value.objectSize);
       buffer.Add('{');
       for (u32 i = 0; i < value.objectSize; ++i) {
         if (i) buffer.Add(',');
@@ -3175,12 +3143,12 @@ template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buf
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
             buffer.Append("  ");
         }
-        const ObjectEntry& entry = object.Entries()[i];
-        const Json* pName = (const Json*)((const char*)&object + entry.keyOffset);
+        const ObjectEntry& entry = pEntries[i];
+        const Json* pName = (const Json*)(pObject + entry.keyOffset);
         WriteJsonString(buffer, pName->GetString());
         buffer.Add(':');
         if (pretty) buffer.Add(' ');
-        const Json& child = *(const Json*)((const char*)&object + entry.valueOffset);
+        const Json& child = *(const Json*)(pObject + entry.valueOffset);
         MarshalJson(child, buffer, pretty, indent);
         if (pretty && value.objectSize > 1)
           --indent;
@@ -3856,25 +3824,15 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
           u32 keyOffset;
           Json::Status status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
           if (status == ABSENT_VALUE) {
-            u32 bucketCount = 0;
-            if (memberCount > 16) {
-              bucketCount = 1;
-              uint64_t requiredBuckets = (uint64_t)memberCount * 2;
-              while (bucketCount < requiredBuckets) {
-                if (bucketCount > UINT32_MAX / 2) {
-                  JSON_WARN("JSON object is too large to index.\n");
-                  return INSUFFICIENT_SPACE;
-                }
-                bucketCount *= 2;
-              }
-            }
-            size_t indexSize = sizeof(ObjectIndex) + (size_t)memberCount * sizeof(ObjectEntry) + (size_t)bucketCount * sizeof(u32);
-            u32 indexOffset = BackAlloc(back, used, indexSize, alignof(ObjectIndex));
+            size_t indexSize = (size_t)memberCount * (sizeof(u32) + sizeof(ObjectEntry));
+            if (memberCount > ObjectBinarySearchThreshold)
+              indexSize += (size_t)memberCount * sizeof(u32);
+            u32 indexOffset = BackAlloc(back, used, indexSize, alignof(u32));
             if (indexOffset == InvalidOffset)
               return INSUFFICIENT_SPACE;
-            ObjectIndex* pIndex = new (pBase + indexOffset) ObjectIndex{bucketCount};
-            if (bucketCount)
-              memset(pIndex->Buckets(memberCount), 0xff, (size_t)bucketCount * sizeof(u32));
+            char* pIndex = pBase + indexOffset;
+            u32* pKeySizes = ObjectKeySizes(pIndex);
+            ObjectEntry* pEntries = ObjectEntries(pIndex, memberCount);
             u32 cursorOffset = lastValueOffset;
             for (u32 i = memberCount; i--;) {
               const Json* pValue = (const Json*)(pBase + cursorOffset);
@@ -3882,20 +3840,25 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
               cursorOffset += pValue->span;
               const Json* pKey = (const Json*)(pBase + cursorOffset);
               JSON_ASSERT(pKey->type == TYPE_STRING);
-              pIndex->Entries()[i] = {
-                Hash32(pKey->GetString()),
+              pKeySizes[i] = pKey->stringSize;
+              pEntries[i] = {
                 cursorOffset - indexOffset,
                 valueOffset - indexOffset,
               };
               cursorOffset += pKey->span;
             }
-            if (bucketCount) {
-              for (u32 i = 0; i < memberCount; ++i) {
-                u32 bucket = pIndex->Entries()[i].hash & (bucketCount - 1);
-                while (pIndex->Buckets(memberCount)[bucket] != UINT32_MAX)
-                  bucket = (bucket + 1) & (bucketCount - 1);
-                pIndex->Buckets(memberCount)[bucket] = i;
-              }
+            if (memberCount > ObjectBinarySearchThreshold) {
+              u32* pOrder = ObjectSortOrder(pIndex, memberCount);
+              for (u32 i = 0; i < memberCount; ++i)
+                pOrder[i] = i;
+              std::sort(pOrder, pOrder + memberCount, [&](u32 left, u32 right) {
+                if (pKeySizes[left] != pKeySizes[right])
+                  return pKeySizes[left] < pKeySizes[right];
+                const Json* pLeft = (const Json*)(pIndex + pEntries[left].keyOffset);
+                const Json* pRight = (const Json*)(pIndex + pEntries[right].keyOffset);
+                int order = memcmp(pLeft->GetString().pData, pRight->GetString().pData, pKeySizes[left]);
+                return order ? order < 0 : left < right;
+              });
             }
             node.type = TYPE_OBJECT;
             node.objectOffset = indexOffset;
@@ -4073,12 +4036,13 @@ size_t Json::EstimateSize(const char* pData, size_t size)
 
   // Every value or key consumes at least one distinct input byte. In the
   // worst case a value owns one node, one copied array slot, one aggregate
-  // header, and their alignment padding. A key owns one node, one object
-  // entry, at most four hash buckets, and node padding. Decoded strings plus
-  // terminators consume less space than their source tokens. These bounds are
-  // currently 53 bytes per value and 51 per key, plus one string byte.
-  constexpr uint64_t ValueBytes = 2 * sizeof(Json) + sizeof(ObjectIndex) + 2 * (alignof(Json) - 1) + alignof(ObjectIndex) - 1;
-  constexpr uint64_t KeyBytes = sizeof(Json) + sizeof(ObjectEntry) + 4 * sizeof(u32) + alignof(Json) - 1;
+  // header, and their alignment padding. A key owns one node, one cached size,
+  // one object entry, at most one sorted index, and node padding. Decoded
+  // strings plus terminators consume less space than their source tokens.
+  // These bounds are currently 49 bytes per value and 39 per key, plus one
+  // string byte.
+  constexpr uint64_t ValueBytes = 2 * sizeof(Json) + 2 * (alignof(Json) - 1) + alignof(u32) - 1;
+  constexpr uint64_t KeyBytes = sizeof(Json) + 2 * sizeof(u32) + sizeof(ObjectEntry) + alignof(Json) - 1;
   constexpr uint64_t BytesPerInputByte = 64;
   static_assert((ValueBytes > KeyBytes ? ValueBytes : KeyBytes) + 1 <= BytesPerInputByte,
                 "JSON parse-size multiplier no longer covers the immutable layout.");
