@@ -16,6 +16,7 @@ intermediate JSON tree or whole-document output buffer.
 - [jart/cosmopolitan](https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c): original `ljson.c` parser from which the C++ implementation was ported.
 - [google/double-conversion](https://github.com/google/double-conversion): amalgamated floating-point parsing and formatting subset.
 - [fastfloat/fast_float](https://github.com/fastfloat/fast_float): amalgamated Eisel-Lemire decimal parsing fast path.
+- [chadaustin/sajson](https://github.com/chadaustin/sajson): inspired the small-object scan and large-object sorted lookup strategy and provides a benchmark comparison.
 - [nlohmann/json](https://github.com/nlohmann/json): vendored comparison implementation used by tests and benchmarks.
 - [nst/JSONTestSuite](https://github.com/nst/JSONTestSuite): vendored JSON conformance tests and fixtures.
 
@@ -100,7 +101,7 @@ On the supported 64-bit targets, the current records are:
 | --- | ---: | --- |
 | `Json` | 16 bytes | Type, packed-subtree `span`, and an 8-byte scalar value or relative-offset payload. String, array, and object nodes each store a `u32` relative offset and `u32` byte/element/member count. |
 | Array child table | `16N` bytes | One contiguous 16-byte `Json` record per element. Scalar-only arrays reuse the records written during parsing and mark their physically reversed table; the accessor reverses the index with fixed arithmetic. Other arrays use source order. Variable-sized descendant payloads remain elsewhere in the same packed subtree and use relative offsets. |
-| `ObjectIndex` | `4 + 12N + 4B` bytes | `u32 bucketCount`, then ordered `{hash, keyOffset, valueOffset}` entries and `B` optional `u32` buckets. The member count lives in the object `Json`. Both entry offsets are relative to the `ObjectIndex`; `keyOffset` points to the key's `Json` record. Objects with at most 16 members use `B = 0`; larger objects use a power-of-two bucket table. |
+| Object index | `12N` or `16N` bytes | `N` contiguous `u32` key sizes followed by `N` source-ordered `{keyOffset, valueOffset}` entries. Objects with more than 100 members append `N` sorted `u32` entry indexes for binary search. Both entry offsets are relative to the start of the key sizes; `keyOffset` points to the key's `Json` record. |
 
 Alignment can insert padding between records, so readers always add the stored
 offset instead of assuming that the next record begins immediately. Conceptually,
@@ -109,9 +110,10 @@ the accessors perform these pointer additions:
 ```text
 string node  -> Json + stringOffset -> UTF-8 bytes
 array node   -> Json + arrayOffset  -> contiguous Json[physical index]
-object node  -> Json + objectOffset -> ObjectIndex + keyOffset   -> key Json -> UTF-8 bytes
-                                             same ObjectIndex + valueOffset -> value Json
-                                             buckets[hash & mask] -> entry
+object node  -> Json + objectOffset -> keySizes[i] -> entries[i]
+                                             + keyOffset   -> key Json -> UTF-8 bytes
+                                             + valueOffset -> value Json
+                                             sortedIndexes[i] -> entries[index]
 ```
 
 Scalar booleans and numbers live directly in the `Json` payload. String nodes
@@ -119,10 +121,9 @@ store their decoded byte count and a direct relative offset to decoded UTF-8
 bytes followed by a trailing null byte; the
 stored size remains authoritative because a JSON string may contain `\u0000`.
 Array indexing is O(1) and has no dependent offset-table load. Objects with at
-most 16 members scan their compact entry table, using each cached hash to avoid
-comparing key bytes unless the hash and length match. Larger objects add an
-open-addressed bucket table for average O(1) lookup while keeping entries in
-source order for serialization.
+most 100 members scan contiguous `u32` key sizes and compare bytes only when a
+size matches. Larger objects binary-search an index sorted by key size and then
+key bytes. The entry array remains in source order for serialization.
 
 `Json::span` is the complete byte size of that node and everything beneath it,
 including indexes, strings, children, and alignment padding. Consequently, the
@@ -182,13 +183,13 @@ Invalid arguments, failed file mappings, and insufficient buffers emit
 logic or memory invariants that indicate a library bug.
 
 Internally, an array has a contiguous block of fixed-size child `Json` records,
-while an object has a table of hashed keys and relative value offsets. The
+while an object has contiguous key-size and relative-offset tables. The
 parser duplicates each array child's 16-byte root record into that block; this
 costs roughly 12 additional bytes per element versus a `u32` offset table but
-removes its dependent load. Objects with more than 16 members add a power-of-two
-bucket table for average O(1) lookup; smaller objects keep the compact
-hash-assisted scan. These records are storage details, not separate public API
-values.
+removes its dependent load. Object lookup scans key sizes through 100 members;
+larger objects append a sorted index and use binary search without changing
+source-order serialization. These records are storage details, not separate
+public API values.
 
 Outgoing JSON can also be written directly from temporary initializer-list
 expressions. The expression is non-owning and must be consumed in the same full
@@ -357,14 +358,14 @@ least 25 ms. Values are nanoseconds per operation; lower is better.
 
 | Library | Parse document | Parse int32 corpus | Parse float32-range corpus | Parse exact int64/binary64 | Serialize | Serialize pretty | Array lookup | Object lookup | Integer access | Floating access | String access |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Flat C++ JSON | 1,444.1 ns | 85.4 ns | 138.7 ns | 488.1 ns | 1,767.6 ns | 2,089.2 ns | 0.5 ns | 4.8 ns | 0.5 ns | 0.4 ns | 0.6 ns |
-| jart/json.cpp | 5,844.1 ns | 276.6 ns | 533.9 ns | 602.1 ns | 2,795.4 ns | 3,722.0 ns | 1.9 ns | 33.5 ns | 0.9 ns | 1.0 ns | 1.0 ns |
-| Mozilla-Ocho/llamafile json.cpp | 5,542.5 ns | 273.1 ns | 518.7 ns | 577.8 ns | 2,764.6 ns | 3,658.5 ns | 1.7 ns | 31.8 ns | 0.7 ns | 0.7 ns | 0.7 ns |
-| nlohmann::ordered_json | 10,682.5 ns | 804.1 ns | 870.3 ns | 1,605.1 ns | 2,733.6 ns | 3,730.2 ns | 1.2 ns | 13.7 ns | 0.5 ns | 0.4 ns | 0.7 ns |
-| niXman/flatjson | 2,498.8 ns | N/A | N/A | N/A | 489.9 ns | 976.7 ns | 4.1 ns | 22.0 ns | 3.4 ns | 16.5 ns | 0.5 ns |
-| chadaustin/sajson | 1,010.5 ns | 171.9 ns | 162.4 ns | N/A | N/A | N/A | 0.5 ns | 9.2 ns | 0.5 ns | 0.5 ns | 0.7 ns |
-| DaveGamble/cJSON | 7,877.8 ns | 867.4 ns | 921.7 ns | N/A | 5,902.8 ns | 6,143.0 ns | 21.7 ns | 45.0 ns | 0.5 ns | 0.4 ns | 0.4 ns |
-| zserge/jsmn | 1,827.5 ns | N/A | N/A | N/A | N/A | N/A | 33.5 ns | 24.9 ns | 3.4 ns | 18.8 ns | 0.6 ns |
+| Flat C++ JSON | 1,445.0 ns | 112.0 ns | 148.7 ns | 536.3 ns | 1,885.4 ns | 2,173.2 ns | 0.4 ns | 12.1 ns | 0.5 ns | 0.4 ns | 0.6 ns |
+| jart/json.cpp | 6,201.2 ns | 298.2 ns | 574.1 ns | 623.4 ns | 2,969.5 ns | 4,027.4 ns | 2.0 ns | 36.9 ns | 0.9 ns | 1.0 ns | 1.0 ns |
+| Mozilla-Ocho/llamafile json.cpp | 5,789.0 ns | 274.9 ns | 552.4 ns | 613.8 ns | 2,956.7 ns | 4,053.4 ns | 1.8 ns | 36.6 ns | 0.8 ns | 0.8 ns | 0.8 ns |
+| nlohmann::ordered_json | 11,337.6 ns | 819.9 ns | 888.7 ns | 1,701.2 ns | 2,933.7 ns | 4,048.0 ns | 1.3 ns | 14.4 ns | 0.4 ns | 0.5 ns | 0.7 ns |
+| niXman/flatjson | 2,681.6 ns | N/A | N/A | N/A | 516.4 ns | 1,074.6 ns | 4.3 ns | 23.8 ns | 3.4 ns | 16.9 ns | 0.5 ns |
+| chadaustin/sajson | 1,145.8 ns | 185.0 ns | 175.0 ns | N/A | N/A | N/A | 0.5 ns | 9.6 ns | 0.6 ns | 0.6 ns | 0.7 ns |
+| DaveGamble/cJSON | 8,100.3 ns | 895.1 ns | 964.9 ns | N/A | 6,250.2 ns | 6,399.4 ns | 24.8 ns | 49.2 ns | 0.6 ns | 0.4 ns | 0.4 ns |
+| zserge/jsmn | 1,872.4 ns | N/A | N/A | N/A | N/A | N/A | 34.3 ns | 25.3 ns | 3.5 ns | 15.4 ns | 0.6 ns |
 
 The focused x86-64/Rosetta check on the same host also kept the target lead:
 Flat C++ JSON measured 136.1 ns for int32 and 221.1 ns for float32-range
