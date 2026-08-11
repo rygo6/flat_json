@@ -327,9 +327,9 @@ Apple Clang 17.0.0. x86-64 checks were last run 2026-08-09.
 | JSONTestSuite required cases | Accepted 95/95 `y_`; rejected 188/188 `n_` |
 | JSONTestSuite implementation-defined cases | Accepted 20 and rejected 15; either result is conforming |
 | `EstimateSize` bound | Every required conformance, round-trip, and accepted fuzz input fit its estimate |
-| Native fuzz regression corpus | 2,304/2,304 completed without a crash |
-| UBSan | Unit tests and 2,304/2,304 fuzz inputs passed |
-| ASan | Host runtime deadlocked before `main`; no project code executed |
+| Native fuzz regression corpus | 2,304/2,304 seeds passed with slice, mutation, round-trip, relocation, and canary checks |
+| UBSan | Unit tests and 2,304/2,304 expanded fuzz inputs passed |
+| ASan | Unit tests and 2,304/2,304 expanded fuzz inputs passed |
 | x86-64 under Rosetta | Build and unit tests passed |
 | Warning-clean build | `flat_json.cpp` passed `-Wall -Wextra -Werror` |
 
