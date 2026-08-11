@@ -6,8 +6,8 @@ struct CJsonBenchmark
   static constexpr const char* Name = "DaveGamble/cJSON";
   static constexpr bool SupportsCompactSerialize = true;
   static constexpr bool SupportsPrettySerialize = true;
-  static constexpr bool SupportsCommonNumericParse = true;
-  static constexpr bool SupportsExactNumericParse = false;
+  static constexpr bool SupportsParse32Bit = true;
+  static constexpr bool SupportsParse64Bit = false;
 
   cJSON* document = nullptr;
   cJSON* array = nullptr;
@@ -38,63 +38,29 @@ struct CJsonBenchmark
            !strcmp(string->valuestring, benchmark::StringValue);
   }
 
-  uint64_t Parse(size_t iterations)
+  bool ValidateParse32Bit()
   {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      cJSON* parsed = cJSON_ParseWithLength(benchmark::JsonText, benchmark::JsonSize);
-      if (!parsed)
-        abort();
-      result += cJSON_GetArraySize(parsed);
-      benchmark::DoNotOptimize(parsed);
-      cJSON_Delete(parsed);
-    }
-    return result;
-  }
-
-  bool ValidateInt32Parse()
-  {
-    cJSON* values = cJSON_ParseWithLength(benchmark::Int32JsonText, benchmark::Int32JsonSize);
+    cJSON* values = cJSON_ParseWithLength(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize);
     if (!values)
       return false;
-    bool valid = benchmark::ValidateInt32Numbers([&](size_t i) {
-      return (int32_t)cJSON_GetArrayItem(values, i)->valuedouble;
-    });
+    cJSON* integers = cJSON_GetArrayItem(values, 0);
+    cJSON* floating = cJSON_GetArrayItem(values, 1);
+    bool valid = cJSON_GetArraySize(values) == 3 &&
+                 benchmark::ValidateInt32Numbers([&](size_t i) {
+                   return (int32_t)cJSON_GetArrayItem(integers, i)->valuedouble;
+                 }) &&
+                 benchmark::ValidateFloatRangeNumbers([&](size_t i) {
+                   return cJSON_GetArrayItem(floating, i)->valuedouble;
+                 });
     cJSON_Delete(values);
     return valid;
   }
 
-  uint64_t ParseInt32Numbers(size_t iterations)
+  uint64_t Parse32Bit(size_t iterations)
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      cJSON* parsed = cJSON_ParseWithLength(benchmark::Int32JsonText, benchmark::Int32JsonSize);
-      if (!parsed)
-        abort();
-      result += cJSON_GetArraySize(parsed);
-      benchmark::DoNotOptimize(parsed);
-      cJSON_Delete(parsed);
-    }
-    return result;
-  }
-
-  bool ValidateFloatRangeParse()
-  {
-    cJSON* values = cJSON_ParseWithLength(benchmark::FloatRangeJsonText, benchmark::FloatRangeJsonSize);
-    if (!values)
-      return false;
-    bool valid = benchmark::ValidateFloatRangeNumbers([&](size_t i) {
-      return cJSON_GetArrayItem(values, i)->valuedouble;
-    });
-    cJSON_Delete(values);
-    return valid;
-  }
-
-  uint64_t ParseFloatRangeNumbers(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      cJSON* parsed = cJSON_ParseWithLength(benchmark::FloatRangeJsonText, benchmark::FloatRangeJsonSize);
+      cJSON* parsed = cJSON_ParseWithLength(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize);
       if (!parsed)
         abort();
       result += cJSON_GetArraySize(parsed);

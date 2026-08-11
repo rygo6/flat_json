@@ -31,7 +31,7 @@ inline constexpr char JsonText[] = R"json({
     "target": 31337
   },
   "integer": 123456789,
-  "floating": 3.141592653589793,
+  "floating": 3.1415927,
   "string": "flat-json-benchmark-string",
   "nested": [
     {"id": 1, "name": "alpha", "samples": [1.25, 2.5, 5.0]},
@@ -52,19 +52,32 @@ inline constexpr size_t ArrayLookupIndex = 63;
 inline constexpr long long ArrayLookupValue = 63;
 inline constexpr long long ObjectLookupValue = 31337;
 inline constexpr long long IntegerValue = 123456789;
-inline constexpr double FloatingValue = 3.141592653589793;
+inline constexpr double FloatingValue = 3.1415927;
 inline constexpr char StringValue[] = "flat-json-benchmark-string";
 inline constexpr size_t StringSize = sizeof(StringValue) - 1;
 
-// These two focused corpora separate common numeric parsing from the exact
-// int64/binary64 stress corpus below. JSON does not encode a float32 type, so
-// the second corpus measures eagerly parsed decimal values chosen from the
-// finite binary32 range; eager parsers still store them according to their own
-// public number model.
-inline constexpr char Int32JsonText[] = R"json([
-  -2147483648, 2147483647, -1000000000, 1000000000,
-  -123456789, 123456789, -65536, 65536,
-  -32768, 32767, -1024, 1024, -1, 0, 1, 42
+// The 32-bit workload covers every JSON kind, nested arrays and objects,
+// escaped and Unicode strings, signed-int32 boundaries, and decimal values
+// spanning the finite binary32 range. JSON has no float32 type, so validation
+// compares each parsed decimal after binary32 rounding.
+inline constexpr char Parse32BitJsonText[] = R"json([
+  [
+    -2147483648, 2147483647, -1000000000, 1000000000,
+    -123456789, 123456789, -65536, 65536,
+    -32768, 32767, -1024, 1024, -1, 0, 1, 42
+  ],
+  [
+    0.0, -0.0, 1.0, -1.0,
+    1.5, -2.5, 0.125, 3.1415927,
+    1e-20, -1e20, 16777216.0, 0.000001,
+    12345.625, 6.02214076e23, 1.17549435e-38, 3.4028235e38
+  ],
+  {
+    "null": null,
+    "booleans": [true, false],
+    "strings": ["", "ASCII", "line\nquote\"slash\\", "\u03c0"],
+    "nested": [{"id": 1, "values": [0, 1.25, -2.5]}, [], {}]
+  }
 ])json";
 
 inline constexpr int32_t Int32Values[] = {
@@ -73,13 +86,6 @@ inline constexpr int32_t Int32Values[] = {
   -32768, 32767, -1024, 1024, -1, 0, 1, 42,
 };
 
-inline constexpr char FloatRangeJsonText[] = R"json([
-  0.0, -0.0, 1.0, -1.0,
-  1.5, -2.5, 0.125, 3.1415927,
-  1e-20, -1e20, 16777216.0, 0.000001,
-  12345.625, 6.02214076e23, 1.17549435e-38, 3.4028235e38
-])json";
-
 inline constexpr float FloatRangeValues[] = {
   0.0f, -0.0f, 1.0f, -1.0f,
   1.5f, -2.5f, 0.125f, 3.1415927f,
@@ -87,31 +93,49 @@ inline constexpr float FloatRangeValues[] = {
   12345.625f, 6.02214076e23f, 1.17549435e-38f, 3.4028235e38f,
 };
 
-inline constexpr size_t Int32JsonSize = sizeof(Int32JsonText) - 1;
 inline constexpr size_t Int32Count = sizeof(Int32Values) / sizeof(*Int32Values);
-inline constexpr size_t FloatRangeJsonSize = sizeof(FloatRangeJsonText) - 1;
 inline constexpr size_t FloatRangeCount = sizeof(FloatRangeValues) / sizeof(*FloatRangeValues);
+inline constexpr size_t Parse32BitJsonSize = sizeof(Parse32BitJsonText) - 1;
 
-// This corpus requires eager, lossless signed 64-bit integer parsing and
-// correctly rounded IEEE-754 binary64 parsing. Libraries that only retain
-// number text, store integers as int32, or store every number as double are
-// intentionally excluded from this benchmark column.
-inline constexpr char ExactNumericJsonText[] = R"json([
-  -9223372036854775808,
-  9223372036854775807,
-  -9007199254740993,
-  9007199254740993,
-  -4294967297,
-  4294967297,
-  0.1000000000000000055511151231257827021181583404541015625,
-  2.2250738585072014e-308,
-  1.7976931348623157e308,
-  4.9406564584124654e-324,
-  1.00000000000000011102230246251565404236316680908203125,
-  9007199254740991.0
+// The 64-bit workload repeats every 32-bit case and adds exact signed-int64
+// and correctly rounded IEEE-754 binary64 boundaries.
+inline constexpr char Parse64BitJsonText[] = R"json([
+  [
+    -2147483648, 2147483647, -1000000000, 1000000000,
+    -123456789, 123456789, -65536, 65536,
+    -32768, 32767, -1024, 1024, -1, 0, 1, 42
+  ],
+  [
+    0.0, -0.0, 1.0, -1.0,
+    1.5, -2.5, 0.125, 3.1415927,
+    1e-20, -1e20, 16777216.0, 0.000001,
+    12345.625, 6.02214076e23, 1.17549435e-38, 3.4028235e38
+  ],
+  [
+    -9223372036854775808,
+    9223372036854775807,
+    -9007199254740993,
+    9007199254740993,
+    -4294967297,
+    4294967297
+  ],
+  [
+    0.1000000000000000055511151231257827021181583404541015625,
+    2.2250738585072014e-308,
+    1.7976931348623157e308,
+    4.9406564584124654e-324,
+    1.00000000000000011102230246251565404236316680908203125,
+    9007199254740991.0
+  ],
+  {
+    "null": null,
+    "booleans": [true, false],
+    "strings": ["", "ASCII", "line\nquote\"slash\\", "\u03c0"],
+    "nested": [{"id": 1, "values": [0, 1.25, -2.5]}, [], {}]
+  }
 ])json";
 
-inline constexpr size_t ExactNumericJsonSize = sizeof(ExactNumericJsonText) - 1;
+inline constexpr size_t Parse64BitJsonSize = sizeof(Parse64BitJsonText) - 1;
 inline constexpr int64_t ExactIntegerValues[] = {
   INT64_MIN,
   INT64_MAX,
@@ -238,12 +262,12 @@ template<typename Function> Measurement Measure(bool supported, size_t initialIt
   return {true, samples[samples.size() / 2]};
 }
 
-inline void PrintMeasurement(Measurement measurement)
+inline void PrintMeasurement(Measurement measurement, const char* pUnavailableSuffix = "")
 {
   if (measurement.supported)
     printf("%.1f ns", measurement.nanoseconds);
   else
-    printf("N/A");
+    printf("N/A%s", pUnavailableSuffix);
 }
 
 template<typename Adapter> int Run()
@@ -261,33 +285,25 @@ template<typename Adapter> int Run()
     fprintf(stderr, "%s pretty serialization validation failed.\n", Adapter::Name);
     return 1;
   }
-  if constexpr (Adapter::SupportsCommonNumericParse) {
-    if (!adapter.ValidateInt32Parse()) {
-      fprintf(stderr, "%s int32 parsing validation failed.\n", Adapter::Name);
-      return 1;
-    }
-    if (!adapter.ValidateFloatRangeParse()) {
-      fprintf(stderr, "%s float-range decimal parsing validation failed.\n", Adapter::Name);
+  if constexpr (Adapter::SupportsParse32Bit) {
+    if (!adapter.ValidateParse32Bit()) {
+      fprintf(stderr, "%s 32-bit parsing validation failed.\n", Adapter::Name);
       return 1;
     }
   }
-  if constexpr (Adapter::SupportsExactNumericParse) {
-    if (!adapter.ValidateExactNumericParse()) {
-      fprintf(stderr, "%s exact int64/binary64 validation failed.\n", Adapter::Name);
+  if constexpr (Adapter::SupportsParse64Bit) {
+    if (!adapter.ValidateParse64Bit()) {
+      fprintf(stderr, "%s 64-bit parsing validation failed.\n", Adapter::Name);
       return 1;
     }
   }
 
-  Measurement parse = Measure(true, 16, [&](size_t iterations) { return adapter.Parse(iterations); });
-  Measurement int32Parse{false, 0};
-  Measurement floatRangeParse{false, 0};
-  if constexpr (Adapter::SupportsCommonNumericParse) {
-    int32Parse = Measure(true, 16, [&](size_t iterations) { return adapter.ParseInt32Numbers(iterations); });
-    floatRangeParse = Measure(true, 16, [&](size_t iterations) { return adapter.ParseFloatRangeNumbers(iterations); });
-  }
-  Measurement exactNumericParse{false, 0};
-  if constexpr (Adapter::SupportsExactNumericParse)
-    exactNumericParse = Measure(true, 16, [&](size_t iterations) { return adapter.ParseExactNumbers(iterations); });
+  Measurement parse32Bit{false, 0};
+  if constexpr (Adapter::SupportsParse32Bit)
+    parse32Bit = Measure(true, 16, [&](size_t iterations) { return adapter.Parse32Bit(iterations); });
+  Measurement parse64Bit{false, 0};
+  if constexpr (Adapter::SupportsParse64Bit)
+    parse64Bit = Measure(true, 16, [&](size_t iterations) { return adapter.Parse64Bit(iterations); });
   Measurement compactSerialize = Measure(Adapter::SupportsCompactSerialize, 16, [&](size_t iterations) { return adapter.SerializeCompact(iterations); });
   Measurement prettySerialize = Measure(Adapter::SupportsPrettySerialize, 16, [&](size_t iterations) { return adapter.SerializePretty(iterations); });
   Measurement arrayLookup = Measure(true, 4096, [&](size_t iterations) { return adapter.LookupArray(iterations); });
@@ -296,18 +312,18 @@ template<typename Adapter> int Run()
   Measurement floatingAccess = Measure(true, 4096, [&](size_t iterations) { return adapter.AccessFloating(iterations); });
   Measurement stringAccess = Measure(true, 4096, [&](size_t iterations) { return adapter.AccessString(iterations); });
 
+  const char* pSerializeUnavailableSuffix = "";
+  if constexpr (requires { Adapter::SerializeUnavailableSuffix; })
+    pSerializeUnavailableSuffix = Adapter::SerializeUnavailableSuffix;
+
   printf("| %s | ", Adapter::Name);
-  PrintMeasurement(parse);
+  PrintMeasurement(parse32Bit);
   printf(" | ");
-  PrintMeasurement(int32Parse);
+  PrintMeasurement(parse64Bit);
   printf(" | ");
-  PrintMeasurement(floatRangeParse);
+  PrintMeasurement(compactSerialize, pSerializeUnavailableSuffix);
   printf(" | ");
-  PrintMeasurement(exactNumericParse);
-  printf(" | ");
-  PrintMeasurement(compactSerialize);
-  printf(" | ");
-  PrintMeasurement(prettySerialize);
+  PrintMeasurement(prettySerialize, pSerializeUnavailableSuffix);
   printf(" | ");
   PrintMeasurement(arrayLookup);
   printf(" | ");

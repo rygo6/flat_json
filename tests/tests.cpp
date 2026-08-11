@@ -322,6 +322,33 @@ large_object_index_test()
         exit(56);
 }
 
+void
+medium_object_lookup_test()
+{
+    char text[2048];
+    char* pCursor = text;
+    *pCursor++ = '{';
+    for (int key = 0; key < 32; ++key) {
+        size_t remaining = sizeof(text) - (size_t)(pCursor - text);
+        int count = snprintf(pCursor, remaining, "%s\"key%02d\":%d", key ? "," : "", key, key);
+        if (count < 0 || (size_t)count >= remaining)
+            exit(223);
+        pCursor += count;
+    }
+    memcpy(pCursor, ",\"target\":31337}", sizeof(",\"target\":31337}"));
+
+    flat::FixedJsonBuffer<8192> arena;
+    if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
+        exit(224);
+    const Json* pJson = arena.Root();
+    if ((*pJson)["key00"].GetLong() != 0 ||
+        (*pJson)["key15"].GetLong() != 15 ||
+        (*pJson)["key31"].GetLong() != 31 ||
+        (*pJson)["target"].GetLong() != 31337 ||
+        pJson->Contains("missing"))
+        exit(225);
+}
+
 static uint64_t
 DoubleBits(double value)
 {
@@ -623,6 +650,8 @@ static const struct
     { "{}", "{}" },
     { "0.1", "0.1" },
     { "\"\"", "\"\"" },
+    { "[\"/\"]", "[\"/\"]" },
+    { "[\"cafÃ©\"]", "[\"cafÃ©\"]" },
     { "null", "null" },
     { "true", "true" },
     { "false", "false" },
@@ -1372,6 +1401,7 @@ main()
     file_map_round_trip_test();
     writable_file_round_trip_test();
     large_object_index_test();
+    medium_object_lookup_test();
     numeric_arena_test();
     fast_decimal_differential_test();
     strict_string_test();

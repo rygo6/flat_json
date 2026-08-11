@@ -33,15 +33,13 @@ the hex lookup table.
 
 ## Method
 
-Every adapter parses the exact document in `benchmark.hpp`, validates the same
-values, and then measures:
+Every supported parse adapter validates the same values before measurement.
+The benchmark measures:
 
-- parsing and destroying the whole document;
-- parsing a focused signed-int32 corpus with eager conversion;
-- parsing a focused decimal corpus spanning the finite binary32 range and
-  validating the final binary32-rounded values;
-- parsing a numeric corpus into exact signed 64-bit integers and correctly
-  rounded IEEE-754 binary64 values, where the library supports both eagerly;
+- parsing a 32-bit-only document containing every JSON value kind, nesting,
+  escapes, signed-int32 boundaries, and finite binary32-range decimals;
+- parsing a 64-bit document that repeats every 32-bit case and adds exact
+  signed-int64 and correctly rounded IEEE-754 binary64 boundaries;
 - serializing the prepared whole document as compact JSON to memory;
 - serializing the prepared whole document with the library's native pretty
   formatting;
@@ -55,35 +53,58 @@ sample run for at least 25 ms. The executables are built with C++23, `-O3`, and
 cJSON C adapter.
 
 The benchmark uses each library's normal ownership model. Flat C++ JSON uses a
-caller-owned fixed arena for parsing. Flat C++ JSON, niXman/flatjson, and cJSON
-serialize compact JSON into caller-owned 64 KiB `char` arrays; the other
-serializers use their native returned strings. The in-memory serialization
-loops perform no file operation. sajson uses its documented
+caller-owned fixed arena for parsing. Flat C++ JSON and cJSON serialize compact
+JSON into caller-owned 64 KiB `char` arrays; the other serializers use their
+native returned strings. The in-memory serialization loops perform no file
+operation. sajson uses its documented
 `single_allocation` mode, which copies immutable input to mutable storage. jsmn
 uses a caller-owned token array.
 
 Pretty output uses two-space indentation where the library exposes an indent
-width: Flat C++ JSON, jart/json.cpp, llamafile json.cpp, nlohmann/json, and
-niXman/flatjson. cJSON's native pretty writer uses tabs. The pretty column is
-therefore a comparison of each library's native formatted writer, while the
-compact column compares whitespace-free output.
+width: Flat C++ JSON, jart/json.cpp, llamafile json.cpp, and nlohmann/json.
+cJSON's native pretty writer uses tabs. The pretty column therefore compares
+each library's native formatted writer, while the compact column compares
+whitespace-free output.
+
+The serialization columns measure converting typed binary values to JSON text.
+niXman/flatjson retains parsed scalar values as source text and copies that text
+during serialization, so it is reported as `N/A*`.
+
+## Serialization ablations
+
+Each change below was measured alone against the immediately preceding build.
+Retained changes passed `make check` before the next experiment.
+
+| Retained change | Observed effect |
+| --- | --- |
+| Inline scalar-child dispatch | Compact about 2.6% faster |
+| Direct 1–3 digit parsed integers | Compact about 10% faster cumulatively |
+| Fuse compact array comma + small integer | Compact about 1.2% faster |
+| Mark unescaped parsed strings as directly writable UTF-8 | Compact about 9% faster with no parse regression |
+| Batch compact object headers and pretty key headers | Compact and pretty about 7% faster |
+| Compile separate compact and pretty walkers | Removed runtime formatting branches |
+| Batch pretty `, ` and object `,\n` | Pretty about 11% faster cumulatively |
+| Put the output-capacity check on one hot success branch | Compact about 1.2% faster |
+
+Rejected experiments were neutral or slower: generic small-integer branches,
+digit-pair conversion, four-to-six-digit specialization, pointer-based output
+state, word-at-a-time output string scans, direct array-pointer walking, bulk
+indentation, whole object key/value fusion, and an integral-double shortcut.
 
 sajson and jsmn are parser-only libraries, so serialization is reported as
-`N/A`; the harness does not pretend an adapter-written serializer belongs to
-them. jsmn also exposes token spans rather than typed values, so its integer and
-floating access rows include the adapter converting those spans to numbers.
+`N/A`; niXman/flatjson is `N/A*` because it copies retained source text rather
+than converting typed binary values. The harness does not pretend an
+adapter-written serializer belongs to parser-only libraries. jsmn exposes token
+spans, so its integer and floating access rows include converting those spans.
 
-The exact-number corpus includes `INT64_MIN`, `INT64_MAX`, integers immediately
-beyond the exact binary64 integer range, minimum subnormal, minimum normal, and
-maximum finite binary64 values, plus a halfway-rounding case. sajson is excluded
-because its typed integer storage is 32-bit and larger integers become doubles.
-cJSON is excluded because it stores every number as a double. niXman/flatjson
-and jsmn retain numeric text and defer typed conversion until access, so timing
-their tokenization as if it had already produced exact 64-bit values would not
-measure the same work. Their exact-number cells are therefore `N/A`.
+The 64-bit workload includes `INT64_MIN`, `INT64_MAX`, integers immediately
+beyond the exact binary64 integer range, minimum subnormal, minimum normal,
+maximum finite binary64, and a halfway-rounding case. sajson is `N/A` because
+larger integers become potentially lossy doubles. cJSON is `N/A` because it
+stores every number as a double.
 
-JSON syntax does not distinguish float32 from binary64. The float32-range
-column therefore does not claim that each library stores a `float`; it measures
-ordinary decimal parsing over that range and validates the value after a
-binary32 cast. Libraries such as niXman/flatjson and jsmn that retain number
-text and defer conversion are `N/A` in both focused eager-conversion columns.
+JSON syntax does not distinguish float32 from binary64. The 32-bit workload
+uses values requiring no more than signed-int32 and binary32 precision and
+validates decimals after a binary32 cast; an implementation may use a wider
+internal representation. niXman/flatjson and jsmn retain numeric source text
+and defer conversion until access, so both typed parse columns are `N/A`.
