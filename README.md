@@ -34,13 +34,13 @@ validate the input.
 
 using namespace flat;
 
-const char* pText = R"({"values":[1,2,3]})";
+constexpr char Text[] = R"({"values":[1,2,3]})";
 FixedJsonBuffer<4096> buffer;
 
-if (Json::EstimateSize(pText) > sizeof(buffer.bytes))
+if (Json::EstimateSize(Text) > sizeof(buffer.bytes))
     return false;
 
-switch (Json::Parse(pText, &buffer))
+switch (Json::Parse(Text, &buffer))
 {
     case Json::SUCCESS: break;
     case Json::MALFORMED:
@@ -61,8 +61,8 @@ buffer is reused or destroyed.
 ### Arrays and objects
 
 Arrays and objects are represented by their `Json` nodes. `GetArray()` and
-`GetObject()` check the type and return that same node. `GetSize()` returns the
-number of elements or members.
+`GetObject()` assert the type in `DEBUG` builds and return that same node.
+`GetSize()` returns the number of elements or members.
 
 ```cpp
 const Json& root = pDocument->GetObject();
@@ -86,6 +86,8 @@ run in `DEBUG` builds and compile out otherwise. Validate uncertain data with
 `GetDouble()` requires `TYPE_DOUBLE`. `GetNumber()` accepts any numeric type.
 `GetString()` returns `{pData, size}`. `pData[size]` is always NUL, but `size`
 is authoritative because decoded strings may contain embedded NUL bytes.
+The parser accepts up to 19 nested arrays or objects; deeper input returns
+`MALFORMED`.
 
 ## Write JSON
 
@@ -93,6 +95,10 @@ Fixed `char` arrays and compatible `std::span` values convert to
 `JsonSpan<char>` automatically. Other memory uses
 `JsonSpan<char>(capacity, pointer)`. Successful memory output is
 NUL-terminated.
+
+Non-integral floating-point output uses roughly 2 KiB of the uncommitted span
+tail as conversion scratch. It can therefore return
+`INSUFFICIENT_SPACE` even when the final JSON text alone would fit.
 
 ```cpp
 #include "flat_json.hpp"
@@ -120,9 +126,10 @@ if (result == Json::SUCCESS)
 Initializer values are non-owning and must be consumed in the same full
 expression. `WriteJsonPretty()` provides formatted output.
 
-`WriteJson()` and `Json::Parse()` warn and return a status for invalid input,
-I/O failure, or insufficient space. `JSON_REQUIRE` and `JSON_PANIC` are only
-for internal invariants that indicate a library bug.
+`WriteJson()` and `Json::Parse()` return statuses for recoverable failures.
+Invalid API arguments, I/O failures, and insufficient space also emit warnings;
+malformed JSON simply returns `MALFORMED`. `JSON_REQUIRE` and `JSON_PANIC` are
+reserved for internal invariants that indicate a library bug.
 
 ## Write and parse immediately
 
@@ -179,11 +186,15 @@ from the end of the buffer while the front is temporary numeric-conversion
 scratch space.
 
 ```text
-low address                                               high address
-
-used = 0                              back                capacity
-|       scratch / unused space         | packed root tree |
-                                        | Json root first  |
+low address                                                   high address
+0 / used                back                                      capacity
+v                         v                                              v
++-------------------------+------+---------------------------------------+
+| conversion scratch /    | root | descendants, indexes, and string data |
+| unused capacity         | Json |                                       |
++-------------------------+------+---------------------------------------+
+                          <---------- immutable packed tree ------------->
+                          <---- allocations grow toward lower addresses
 ```
 
 Current 64-bit records:
@@ -209,10 +220,11 @@ Objects through 100 members scan contiguous key sizes and compare bytes only
 after a size match. Larger objects binary-search indexes sorted by key size and
 bytes. Source-order entries remain unchanged for serialization.
 
-`Json::span` covers a node and every descendant, including padding. Copying
-those bytes to another suitably aligned address preserves all relative
-offsets. The layout uses the native ABI and endianness; it is not a stable
-cross-platform file format. `u32` offsets limit a subtree to less than 4 GiB.
+Each `Json` record has an internal `span` field covering that node and every
+descendant, including padding. Copying those bytes to another suitably aligned
+address preserves all relative offsets. The layout uses the native ABI and
+endianness; it is not a stable cross-platform file format. `u32` offsets limit
+a subtree to less than 4 GiB.
 
 ## Files
 
@@ -273,9 +285,10 @@ bool stream = root["stream"].GetBool();
 JsonString content = root["messages"][0]["content"].GetString();
 ```
 
-The embedded floating-point code emits the shortest round-trippable `float`
-or `double`. A `float` initializer retains its type instead of first widening
-to `double`.
+The embedded floating-point code emits the shortest round-trippable finite
+`float` or `double`. A `float` initializer retains its type instead of first
+widening to `double`. NaN writes as `null`; positive and negative infinity
+write as `1e5000` and `-1e5000`.
 
 ## Benchmarks
 
@@ -285,14 +298,14 @@ Measured 2026-08-11 on macOS 26.5.1 ARM64 with Apple Clang 17.0.0, C++23,
 
 | Library | Parse 32-bit only | Parse with 64-bit | Serialize binary to string | Serialize binary to string pretty | Array lookup | Object lookup | Integer access | Floating access | String access |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Flat C++ JSON | 504.0 ns | 1,064.4 ns | 1,183.3 ns | 1,266.0 ns | 0.5 ns | 6.7 ns | 0.5 ns | 0.4 ns | 0.6 ns |
-| jart/json.cpp | 2,093.6 ns | 3,095.8 ns | 2,916.2 ns | 3,988.7 ns | 2.0 ns | 36.4 ns | 0.9 ns | 1.0 ns | 1.0 ns |
-| Mozilla-Ocho/llamafile json.cpp | 1,718.3 ns | 2,497.0 ns | 2,873.1 ns | 3,949.9 ns | 1.8 ns | 37.4 ns | 0.8 ns | 0.8 ns | 0.8 ns |
-| nlohmann::ordered_json | 3,291.1 ns | 5,153.2 ns | 2,877.2 ns | 3,982.4 ns | 1.3 ns | 14.3 ns | 0.4 ns | 0.5 ns | 0.7 ns |
-| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.2 ns | 24.1 ns | 3.5 ns | 12.4 ns | 0.5 ns |
-| chadaustin/sajson | 514.1 ns | N/A | N/A | N/A | 0.5 ns | 9.6 ns | 0.6 ns | 0.5 ns | 0.7 ns |
-| DaveGamble/cJSON | 2,807.1 ns | N/A | 5,976.0 ns | 6,205.9 ns | 25.1 ns | 48.6 ns | 0.5 ns | 0.4 ns | 0.5 ns |
-| zserge/jsmn | N/A | N/A | N/A | N/A | 34.7 ns | 27.8 ns | 3.5 ns | 10.8 ns | 0.6 ns |
+| Flat C++ JSON | 517.9 ns | 1,055.9 ns | 1,192.7 ns | 1,265.7 ns | 0.5 ns | 6.9 ns | 0.5 ns | 0.4 ns | 0.6 ns |
+| jart/json.cpp | 2,143.0 ns | 3,149.4 ns | 2,947.7 ns | 3,978.4 ns | 2.0 ns | 38.5 ns | 0.9 ns | 1.0 ns | 1.0 ns |
+| Mozilla-Ocho/llamafile json.cpp | 1,743.2 ns | 2,551.6 ns | 2,890.1 ns | 3,951.2 ns | 1.8 ns | 36.9 ns | 0.8 ns | 0.8 ns | 0.8 ns |
+| nlohmann::ordered_json | 3,353.9 ns | 5,171.2 ns | 2,971.5 ns | 3,966.7 ns | 1.3 ns | 14.6 ns | 0.4 ns | 0.5 ns | 0.7 ns |
+| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.2 ns | 24.0 ns | 3.5 ns | 12.3 ns | 0.5 ns |
+| chadaustin/sajson | 502.0 ns | N/A | N/A | N/A | 0.5 ns | 9.7 ns | 0.6 ns | 0.5 ns | 0.7 ns |
+| DaveGamble/cJSON | 2,888.4 ns | N/A | 5,990.5 ns | 6,241.7 ns | 25.7 ns | 50.1 ns | 0.5 ns | 0.4 ns | 0.5 ns |
+| zserge/jsmn | N/A | N/A | N/A | N/A | 34.8 ns | 27.9 ns | 3.6 ns | 11.0 ns | 0.6 ns |
 
 The parse columns include only libraries that eagerly produce and validate the
 required numeric values:
@@ -318,12 +331,13 @@ make benchmark
 
 ## Verification
 
-Native tests, benchmarks, and UBSan were rerun 2026-08-11 on macOS ARM64 with
-Apple Clang 17.0.0. x86-64 checks were last run 2026-08-09.
+Native tests, benchmarks, ASan, and UBSan were rerun 2026-08-11 on macOS ARM64
+with Apple Clang 17.0.0. x86-64 checks were last run 2026-08-09.
 
 | Check | Result |
 | --- | --- |
 | Unit, parse/write, and file round trips | Passed on ARM64 |
+| Deterministic property tests | Generated documents, mutations, numeric bit patterns, output canaries, lookup thresholds, embedded NULs, nesting, and rollback passed |
 | JSONTestSuite required cases | Accepted 95/95 `y_`; rejected 188/188 `n_` |
 | JSONTestSuite implementation-defined cases | Accepted 20 and rejected 15; either result is conforming |
 | `EstimateSize` bound | Every required conformance, round-trip, and accepted fuzz input fit its estimate |
@@ -331,7 +345,7 @@ Apple Clang 17.0.0. x86-64 checks were last run 2026-08-09.
 | UBSan | Unit tests and 2,304/2,304 expanded fuzz inputs passed |
 | ASan | Unit tests and 2,304/2,304 expanded fuzz inputs passed |
 | x86-64 under Rosetta | Build and unit tests passed |
-| Warning-clean build | `flat_json.cpp` passed `-Wall -Wextra -Werror` |
+| Warning-clean build | `flat_json.cpp`, `tests.cpp`, and `fuzz.cpp` passed `-Wall -Wextra -Werror` |
 
 JSONTestSuite prefixes mean:
 
