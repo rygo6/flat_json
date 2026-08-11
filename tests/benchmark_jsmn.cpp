@@ -10,8 +10,8 @@ struct JsmnBenchmark
   static constexpr const char* Name = "zserge/jsmn";
   static constexpr bool SupportsCompactSerialize = false;
   static constexpr bool SupportsPrettySerialize = false;
-  static constexpr bool SupportsCommonNumericParse = false;
-  static constexpr bool SupportsExactNumericParse = false;
+  static constexpr bool SupportsParse32Bit = false;
+  static constexpr bool SupportsParse64Bit = false;
   static constexpr size_t TokenCapacity = 512;
 
   std::array<jsmntok_t, TokenCapacity> tokens;
@@ -95,22 +95,6 @@ struct JsmnBenchmark
            ParseFloating(floating) == benchmark::FloatingValue &&
            tokens[string].end - tokens[string].start == (int)benchmark::StringSize &&
            !memcmp(benchmark::JsonText + tokens[string].start, benchmark::StringValue, benchmark::StringSize);
-  }
-
-  uint64_t Parse(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      std::array<jsmntok_t, TokenCapacity> parsedTokens;
-      jsmn_parser parser;
-      jsmn_init(&parser);
-      int count = jsmn_parse(&parser, benchmark::JsonText, benchmark::JsonSize, parsedTokens.data(), parsedTokens.size());
-      if (count < 1)
-        abort();
-      result += count;
-      benchmark::DoNotOptimize(parsedTokens);
-    }
-    return result;
   }
 
   uint64_t SerializeCompact(size_t) { return 0; }

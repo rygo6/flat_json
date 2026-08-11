@@ -9,13 +9,12 @@ struct LlamafileBenchmark
   static constexpr const char* Name = "llamafile json.cpp";
   static constexpr bool SupportsCompactSerialize = true;
   static constexpr bool SupportsPrettySerialize = true;
-  static constexpr bool SupportsCommonNumericParse = true;
-  static constexpr bool SupportsExactNumericParse = true;
+  static constexpr bool SupportsParse32Bit = true;
+  static constexpr bool SupportsParse64Bit = true;
 
   inline static const std::string_view Input{benchmark::JsonText, benchmark::JsonSize};
-  inline static const std::string_view Int32Input{benchmark::Int32JsonText, benchmark::Int32JsonSize};
-  inline static const std::string_view FloatRangeInput{benchmark::FloatRangeJsonText, benchmark::FloatRangeJsonSize};
-  inline static const std::string_view ExactNumericInput{benchmark::ExactNumericJsonText, benchmark::ExactNumericJsonSize};
+  inline static const std::string_view Parse32BitInput{benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize};
+  inline static const std::string_view Parse64BitInput{benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize};
   inline static const std::string ArrayKey{"array"};
   inline static const std::string ObjectKey{"object"};
   inline static const std::string IntegerKey{"integer"};
@@ -48,77 +47,49 @@ struct LlamafileBenchmark
            pString->getString() == benchmark::StringValue;
   }
 
-  uint64_t Parse(size_t iterations)
+  bool ValidateParse32Bit()
   {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      auto parsed = Json::parse(Input);
-      if (parsed.first != Json::success)
-        abort();
-      result += parsed.second.getObject().size();
-      benchmark::DoNotOptimize(parsed.second);
-    }
-    return result;
-  }
-
-  bool ValidateInt32Parse()
-  {
-    auto parsed = Json::parse(Int32Input);
-    if (parsed.first != Json::success)
-      return false;
-    return benchmark::ValidateInt32Numbers([&](size_t i) { return parsed.second[i].getLong(); });
-  }
-
-  uint64_t ParseInt32Numbers(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      auto parsed = Json::parse(Int32Input);
-      if (parsed.first != Json::success)
-        abort();
-      result += parsed.second.getArray().size();
-      benchmark::DoNotOptimize(parsed.second);
-    }
-    return result;
-  }
-
-  bool ValidateFloatRangeParse()
-  {
-    auto parsed = Json::parse(FloatRangeInput);
-    if (parsed.first != Json::success)
-      return false;
-    return benchmark::ValidateFloatRangeNumbers([&](size_t i) { return parsed.second[i].getDouble(); });
-  }
-
-  uint64_t ParseFloatRangeNumbers(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      auto parsed = Json::parse(FloatRangeInput);
-      if (parsed.first != Json::success)
-        abort();
-      result += parsed.second.getArray().size();
-      benchmark::DoNotOptimize(parsed.second);
-    }
-    return result;
-  }
-
-  bool ValidateExactNumericParse()
-  {
-    auto parsed = Json::parse(ExactNumericInput);
+    auto parsed = Json::parse(Parse32BitInput);
     if (parsed.first != Json::success)
       return false;
     Json& values = parsed.second;
-    return benchmark::ValidateExactNumbers(
-      [&](size_t i) { return values[i].getLong(); },
-      [&](size_t i) { return values[benchmark::ExactIntegerCount + i].getDouble(); });
+    return values.getArray().size() == 3 &&
+           benchmark::ValidateInt32Numbers([&](size_t i) { return values[0][i].getLong(); }) &&
+           benchmark::ValidateFloatRangeNumbers([&](size_t i) { return values[1][i].getDouble(); });
   }
 
-  uint64_t ParseExactNumbers(size_t iterations)
+  uint64_t Parse32Bit(size_t iterations)
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      auto parsed = Json::parse(ExactNumericInput);
+      auto parsed = Json::parse(Parse32BitInput);
+      if (parsed.first != Json::success)
+        abort();
+      result += parsed.second.getArray().size();
+      benchmark::DoNotOptimize(parsed.second);
+    }
+    return result;
+  }
+
+  bool ValidateParse64Bit()
+  {
+    auto parsed = Json::parse(Parse64BitInput);
+    if (parsed.first != Json::success)
+      return false;
+    Json& values = parsed.second;
+    return values.getArray().size() == 5 &&
+           benchmark::ValidateInt32Numbers([&](size_t i) { return values[0][i].getLong(); }) &&
+           benchmark::ValidateFloatRangeNumbers([&](size_t i) { return values[1][i].getDouble(); }) &&
+           benchmark::ValidateExactNumbers(
+             [&](size_t i) { return values[2][i].getLong(); },
+             [&](size_t i) { return values[3][i].getDouble(); });
+  }
+
+  uint64_t Parse64Bit(size_t iterations)
+  {
+    uint64_t result = 0;
+    for (size_t i = 0; i < iterations; ++i) {
+      auto parsed = Json::parse(Parse64BitInput);
       if (parsed.first != Json::success)
         abort();
       result += parsed.second.getArray().size();

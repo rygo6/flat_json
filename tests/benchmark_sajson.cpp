@@ -8,8 +8,8 @@ struct SajsonBenchmark
   static constexpr const char* Name = "chadaustin/sajson";
   static constexpr bool SupportsCompactSerialize = false;
   static constexpr bool SupportsPrettySerialize = false;
-  static constexpr bool SupportsCommonNumericParse = true;
-  static constexpr bool SupportsExactNumericParse = false;
+  static constexpr bool SupportsParse32Bit = true;
+  static constexpr bool SupportsParse64Bit = false;
 
   std::unique_ptr<sajson::document> document;
   std::unique_ptr<sajson::value> array;
@@ -44,61 +44,26 @@ struct SajsonBenchmark
            !memcmp(string->as_cstring(), benchmark::StringValue, benchmark::StringSize);
   }
 
-  uint64_t Parse(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      sajson::document parsed = sajson::parse(
-        sajson::single_allocation(),
-        sajson::string(benchmark::JsonText, benchmark::JsonSize));
-      if (!parsed.is_valid())
-        abort();
-      result += parsed.get_root().get_length();
-      benchmark::DoNotOptimize(parsed);
-    }
-    return result;
-  }
-
-  bool ValidateInt32Parse()
+  bool ValidateParse32Bit()
   {
     sajson::document parsed = sajson::parse(
-      sajson::single_allocation(), sajson::string(benchmark::Int32JsonText, benchmark::Int32JsonSize));
+      sajson::single_allocation(), sajson::string(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize));
     if (!parsed.is_valid())
       return false;
     sajson::value values = parsed.get_root();
-    return benchmark::ValidateInt32Numbers([&](size_t i) { return values.get_array_element(i).get_integer_value(); });
+    sajson::value integers = values.get_array_element(0);
+    sajson::value floating = values.get_array_element(1);
+    return values.get_length() == 3 &&
+           benchmark::ValidateInt32Numbers([&](size_t i) { return integers.get_array_element(i).get_integer_value(); }) &&
+           benchmark::ValidateFloatRangeNumbers([&](size_t i) { return floating.get_array_element(i).get_double_value(); });
   }
 
-  uint64_t ParseInt32Numbers(size_t iterations)
+  uint64_t Parse32Bit(size_t iterations)
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
       sajson::document parsed = sajson::parse(
-        sajson::single_allocation(), sajson::string(benchmark::Int32JsonText, benchmark::Int32JsonSize));
-      if (!parsed.is_valid())
-        abort();
-      result += parsed.get_root().get_length();
-      benchmark::DoNotOptimize(parsed);
-    }
-    return result;
-  }
-
-  bool ValidateFloatRangeParse()
-  {
-    sajson::document parsed = sajson::parse(
-      sajson::single_allocation(), sajson::string(benchmark::FloatRangeJsonText, benchmark::FloatRangeJsonSize));
-    if (!parsed.is_valid())
-      return false;
-    sajson::value values = parsed.get_root();
-    return benchmark::ValidateFloatRangeNumbers([&](size_t i) { return values.get_array_element(i).get_double_value(); });
-  }
-
-  uint64_t ParseFloatRangeNumbers(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      sajson::document parsed = sajson::parse(
-        sajson::single_allocation(), sajson::string(benchmark::FloatRangeJsonText, benchmark::FloatRangeJsonSize));
+        sajson::single_allocation(), sajson::string(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize));
       if (!parsed.is_valid())
         abort();
       result += parsed.get_root().get_length();

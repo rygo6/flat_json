@@ -90,8 +90,8 @@ $CXX $benchmarkFlags -I"$scriptDirectory" \
   "$scriptDirectory/benchmark_jsmn.cpp" \
   -o "$buildDirectory/jsmn"
 
-printf '%s\n' '| Library | Parse document | Parse int32 corpus | Parse float32-range corpus | Parse exact int64/binary64 | Serialize | Serialize pretty | Array lookup | Object lookup | Integer access | Floating access | String access |'
-printf '%s\n' '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
+printf '%s\n' '| Library | Parse 32-bit only | Parse with 64-bit | Serialize binary to string | Serialize binary to string pretty | Array lookup | Object lookup | Integer access | Floating access | String access |'
+printf '%s\n' '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
 for benchmarkName in flat_json jart llamafile nlohmann nixman_flatjson sajson cjson jsmn; do
   "$buildDirectory/$benchmarkName"
 done

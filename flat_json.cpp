@@ -2115,17 +2115,19 @@ struct OutputBuffer
   {
     if (!pData && capacity) {
       JSON_WARN("JSON output cannot be null when its capacity is nonzero.\n");
+      size = capacity;
       status = Json::INVALID_ARGUMENT;
     }
   }
 
   bool ReserveBytes(size_t count)
   {
-    if (status != Json::SUCCESS)
-      return false;
     if (count <= capacity - size)
       return true;
+    if (status != Json::SUCCESS)
+      return false;
     JSON_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
+    size = capacity;
     status = Json::INSUFFICIENT_SPACE;
     return false;
   }
@@ -2188,7 +2190,8 @@ struct OutputBuffer
   }
 };
 
-template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, bool pretty, int indent);
+template<bool Pretty, typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, int indent);
+template<typename Buffer> JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer);
 template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString string);
 template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonString string);
 
@@ -3009,7 +3012,28 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
   const u32* pKeySizes = ObjectKeySizes(pObject);
   const ObjectEntry* pEntries = ObjectEntries(pObject, object.objectSize);
   if (object.objectSize <= ObjectBinarySearchThreshold) {
-    for (u32 i = 0; i < object.objectSize; ++i) {
+    u32 i = 0;
+    if (object.objectSize >= 16 && key.size <= UINT32_MAX) {
+      using KeySizeVector = u32 __attribute__((vector_size(16)));
+      KeySizeVector wanted = {(u32)key.size, (u32)key.size, (u32)key.size, (u32)key.size};
+      u32 vectorEnd = object.objectSize & ~3u;
+      for (; i < vectorEnd; i += 4) {
+        KeySizeVector sizes;
+        memcpy(&sizes, pKeySizes + i, sizeof(sizes));
+        KeySizeVector matches = sizes == wanted;
+        if (!(matches[0] | matches[1] | matches[2] | matches[3]))
+          continue;
+        for (u32 j = i; j < i + 4; ++j) {
+          if (pKeySizes[j] != key.size)
+            continue;
+          const ObjectEntry& entry = pEntries[j];
+          const Json* pName = (const Json*)(pObject + entry.keyOffset);
+          if (!memcmp(pName->GetString().pData, key.pData, key.size))
+            return (const Json*)(pObject + entry.valueOffset);
+        }
+      }
+    }
+    for (; i < object.objectSize; ++i) {
       if (pKeySizes[i] != key.size)
         continue;
       const ObjectEntry& entry = pEntries[i];
@@ -3075,14 +3099,14 @@ const Json& Json::operator[](JsonString key) const
 Json::Status Json::ToString(JsonSpan<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson(*this, buffer, false, 0);
+  MarshalJson<false>(*this, buffer, 0);
   return buffer.Finish();
 }
 
 Json::Status Json::ToStringPretty(JsonSpan<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson(*this, buffer, true, 0);
+  MarshalJson<true>(*this, buffer, 0);
   return buffer.Finish();
 }
 
@@ -3090,43 +3114,110 @@ Json::Status Json::ToStringPretty(JsonSpan<char> output) const
 // JSON serialization
 ////////////////////////////////////////////////////////////////////////////////
 
-///////////////////////////////////////////////////////
-// MarshalJson
-//  Serializes an immutable parsed node directly into caller-owned output.
-///////////////////////////////////////////////////////
-template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, bool pretty, int indent)
+template<typename Buffer> JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
 {
   switch (value.type)
   {
     case Json::TYPE_NULL:
       buffer.Append("null");
-      break;
+      return true;
     case Json::TYPE_STRING:
       WriteJsonString(buffer, value.GetString());
-      break;
+      return true;
+    case Json::TYPE_PLAIN_STRING:
+      buffer.AppendQuoted(value.GetString().pData, value.stringSize);
+      return true;
     case Json::TYPE_BOOL:
       if (value.boolValue) buffer.Append("true");
       else                 buffer.Append("false");
-      break;
+      return true;
     case Json::TYPE_LONG:
+      if constexpr (requires { buffer.Reserve(2); buffer.Commit(2); }) {
+        if (0 <= value.longValue && value.longValue < 100) {
+          char* pOutput = buffer.Reserve(2);
+          if (!pOutput)
+            return true;
+          if (value.longValue < 10) {
+            pOutput[0] = value.longValue + '0';
+            buffer.Commit(1);
+          } else {
+            pOutput[0] = value.longValue / 10 + '0';
+            pOutput[1] = value.longValue % 10 + '0';
+            buffer.Commit(2);
+          }
+          return true;
+        }
+        if (0 <= value.longValue && value.longValue < 1000) {
+          char* pOutput = buffer.Reserve(3);
+          if (!pOutput)
+            return true;
+          pOutput[0] = value.longValue / 100 + '0';
+          pOutput[1] = value.longValue / 10 % 10 + '0';
+          pOutput[2] = value.longValue % 10 + '0';
+          buffer.Commit(3);
+          return true;
+        }
+      }
       WriteLong(buffer, value.longValue);
-      break;
+      return true;
     case Json::TYPE_FLOAT:
       WriteDouble(buffer, value.floatValue, true);
-      break;
+      return true;
     case Json::TYPE_DOUBLE:
       WriteDouble(buffer, value.doubleValue, false);
-      break;
+      return true;
+    case Json::TYPE_ARRAY:
+    case Json::TYPE_OBJECT:
+      return false;
+    default:
+      JSON_PANIC("Unhandled JSON type.");
+  }
+}
+
+///////////////////////////////////////////////////////
+// MarshalJson
+//  Serializes an immutable parsed node directly into caller-owned output.
+///////////////////////////////////////////////////////
+template<bool Pretty, typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, int indent)
+{
+  if (MarshalJsonScalar(value, buffer))
+    return;
+  switch (value.type)
+  {
     case Json::TYPE_ARRAY: {
       buffer.Add('[');
       u32 size = value.arraySize & Json::ArraySizeMask;
       for (u32 i = 0; i < size; ++i) {
-        if (i) {
-          buffer.Add(',');
-          if (pretty)
-            buffer.Add(' ');
+        const Json& child = value[(size_t)i];
+        if constexpr (!Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+          if (i && child.type == Json::TYPE_LONG && 0 <= child.longValue && child.longValue < 1000) {
+            size_t digits = child.longValue < 10 ? 1 : child.longValue < 100 ? 2 : 3;
+            char* pOutput = buffer.Reserve(digits + 1);
+            if (!pOutput)
+              return;
+            pOutput[0] = ',';
+            if (digits == 1) {
+              pOutput[1] = child.longValue + '0';
+            } else if (digits == 2) {
+              pOutput[1] = child.longValue / 10 + '0';
+              pOutput[2] = child.longValue % 10 + '0';
+            } else {
+              pOutput[1] = child.longValue / 100 + '0';
+              pOutput[2] = child.longValue / 10 % 10 + '0';
+              pOutput[3] = child.longValue % 10 + '0';
+            }
+            buffer.Commit(digits + 1);
+            continue;
+          }
         }
-        MarshalJson(value[(size_t)i], buffer, pretty, indent);
+        if (i) {
+          if constexpr (Pretty)
+            buffer.Append(", ");
+          else
+            buffer.Add(',');
+        }
+        if (!MarshalJsonScalar(child, buffer))
+          MarshalJson<Pretty>(child, buffer, indent);
       }
       buffer.Add(']');
       break;
@@ -3136,28 +3227,87 @@ template<typename Buffer> static void MarshalJson(const Json& value, Buffer& buf
       const ObjectEntry* pEntries = ObjectEntries(pObject, value.objectSize);
       buffer.Add('{');
       for (u32 i = 0; i < value.objectSize; ++i) {
-        if (i) buffer.Add(',');
-        if (pretty && value.objectSize > 1) {
-          buffer.Add('\n');
-          ++indent;
-          for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-            buffer.Append("  ");
-        }
         const ObjectEntry& entry = pEntries[i];
         const Json* pName = (const Json*)(pObject + entry.keyOffset);
-        WriteJsonString(buffer, pName->GetString());
-        buffer.Add(':');
-        if (pretty) buffer.Add(' ');
+        bool wroteHeader = false;
+        if constexpr (!Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+          if (pName->type == Json::TYPE_PLAIN_STRING) {
+            JsonString name = pName->GetString();
+            size_t count = (i ? 1 : 0) + name.size + 3;
+            char* pOutput = buffer.Reserve(count);
+            if (!pOutput)
+              return;
+            char* pCursor = pOutput;
+            if (i)
+              *pCursor++ = ',';
+            *pCursor++ = '"';
+            memcpy(pCursor, name.pData, name.size);
+            pCursor += name.size;
+            *pCursor++ = '"';
+            *pCursor++ = ':';
+            JSON_ASSERT(pCursor == pOutput + count);
+            buffer.Commit(count);
+            wroteHeader = true;
+          }
+        }
+        if (!wroteHeader) {
+          if constexpr (Pretty) {
+            if (value.objectSize > 1) {
+              if (i)
+                buffer.Append(",\n");
+              else
+                buffer.Add('\n');
+              ++indent;
+              for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
+                buffer.Append("  ");
+            } else if (i) {
+              buffer.Add(',');
+            }
+          } else {
+            if (i)
+              buffer.Add(',');
+          }
+          bool wroteName = false;
+          if constexpr (Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+            if (pName->type == Json::TYPE_PLAIN_STRING) {
+              JsonString name = pName->GetString();
+              char* pOutput = buffer.Reserve(name.size + 4);
+              if (!pOutput)
+                return;
+              pOutput[0] = '"';
+              memcpy(pOutput + 1, name.pData, name.size);
+              pOutput[name.size + 1] = '"';
+              pOutput[name.size + 2] = ':';
+              pOutput[name.size + 3] = ' ';
+              buffer.Commit(name.size + 4);
+              wroteName = true;
+            }
+          }
+          if (!wroteName) {
+            if (pName->type == Json::TYPE_PLAIN_STRING)
+              buffer.AppendQuoted(pName->GetString().pData, pName->stringSize);
+            else
+              WriteJsonString(buffer, pName->GetString());
+            buffer.Add(':');
+            if constexpr (Pretty)
+              buffer.Add(' ');
+          }
+        }
         const Json& child = *(const Json*)(pObject + entry.valueOffset);
-        MarshalJson(child, buffer, pretty, indent);
-        if (pretty && value.objectSize > 1)
-          --indent;
+        if (!MarshalJsonScalar(child, buffer))
+          MarshalJson<Pretty>(child, buffer, indent);
+        if constexpr (Pretty) {
+          if (value.objectSize > 1)
+            --indent;
+        }
       }
-      if (pretty && value.objectSize > 1) {
-        buffer.Add('\n');
-        for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-          buffer.Append("  ");
-        ++indent;
+      if constexpr (Pretty) {
+        if (value.objectSize > 1) {
+          buffer.Add('\n');
+          for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
+            buffer.Append("  ");
+          ++indent;
+        }
       }
       buffer.Add('}');
       break;
@@ -3265,7 +3415,7 @@ template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonStr
 // MarshalValue
 //  Serializes an initializer-list value tree without intermediate storage.
 ///////////////////////////////////////////////////////
-template<typename Buffer> static void MarshalValue(const JsonValue& value, Buffer& buffer, bool pretty, int indent)
+template<bool Pretty, typename Buffer> static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
 {
   switch (value.type)
   {
@@ -3296,10 +3446,10 @@ template<typename Buffer> static void MarshalValue(const JsonValue& value, Buffe
       for (size_t i = 0; i < value.listValue.size; ++i) {
         if (i) {
           buffer.Add(',');
-          if (pretty)
+          if constexpr (Pretty)
             buffer.Add(' ');
         }
-        MarshalValue(pValues[i], buffer, pretty, indent);
+        MarshalValue<Pretty>(pValues[i], buffer, indent);
       }
       buffer.Add(']');
       break;
@@ -3311,21 +3461,25 @@ template<typename Buffer> static void MarshalValue(const JsonValue& value, Buffe
       for (size_t i = 0; i < count; ++i) {
         if (i)
           buffer.Add(',');
-        if (pretty && count > 1) {
-          buffer.Add('\n');
-          for (int indentationIndex = 0; indentationIndex < indent + 1; ++indentationIndex)
-            buffer.Append("  ");
+        if constexpr (Pretty) {
+          if (count > 1) {
+            buffer.Add('\n');
+            for (int indentationIndex = 0; indentationIndex < indent + 1; ++indentationIndex)
+              buffer.Append("  ");
+          }
         }
         WriteJsonString(buffer, pMembers[i].key);
         buffer.Add(':');
-        if (pretty)
+        if constexpr (Pretty)
           buffer.Add(' ');
-        MarshalValue(pMembers[i].value, buffer, pretty, indent + 1);
+        MarshalValue<Pretty>(pMembers[i].value, buffer, indent + 1);
       }
-      if (pretty && count > 1) {
-        buffer.Add('\n');
-        for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-          buffer.Append("  ");
+      if constexpr (Pretty) {
+        if (count > 1) {
+          buffer.Add('\n');
+          for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
+            buffer.Append("  ");
+        }
       }
       buffer.Add('}');
       break;
@@ -3338,14 +3492,14 @@ template<typename Buffer> static void MarshalValue(const JsonValue& value, Buffe
 Json::Status WriteJson(const JsonValue& value, JsonSpan<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue(value, buffer, false, 0);
+  MarshalValue<false>(value, buffer, 0);
   return buffer.Finish();
 }
 
 Json::Status WriteJsonPretty(const JsonValue& value, JsonSpan<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue(value, buffer, true, 0);
+  MarshalValue<true>(value, buffer, 0);
   return buffer.Finish();
 }
 
@@ -3359,7 +3513,7 @@ Json::Status WriteJson(const JsonValue& value, WritableFile& output)
     JSON_WARN("Cannot write JSON to an invalid file.\n");
     return Json::IO_ERROR;
   }
-  MarshalValue(value, output, false, 0);
+  MarshalValue<false>(value, output, 0);
   return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
@@ -3369,7 +3523,7 @@ Json::Status WriteJsonPretty(const JsonValue& value, WritableFile& output)
     JSON_WARN("Cannot write JSON to an invalid file.\n");
     return Json::IO_ERROR;
   }
-  MarshalValue(value, output, true, 0);
+  MarshalValue<true>(value, output, 0);
   return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
@@ -3379,7 +3533,7 @@ Json::Status WriteJson(const Json& value, WritableFile& output)
     JSON_WARN("Cannot write JSON to an invalid file.\n");
     return Json::IO_ERROR;
   }
-  MarshalJson(value, output, false, 0);
+  MarshalJson<false>(value, output, 0);
   return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
@@ -3389,7 +3543,7 @@ Json::Status WriteJsonPretty(const Json& value, WritableFile& output)
     JSON_WARN("Cannot write JSON to an invalid file.\n");
     return Json::IO_ERROR;
   }
-  MarshalJson(value, output, true, 0);
+  MarshalJson<true>(value, output, 0);
   return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
 }
 
@@ -3415,6 +3569,7 @@ JSON_INLINE static Json::Status StoreNode(char* pBase, size_t used, size_t& back
   switch (node.type)
   {
     case Json::TYPE_STRING:
+    case Json::TYPE_PLAIN_STRING:
       JSON_ASSERT(node.stringOffset >= offset);
       node.stringOffset -= offset;
       break;
@@ -3450,7 +3605,7 @@ JSON_INLINE static Json::Status ParseNumberNode(u32& nodeOffset, char* pBase, si
 
   Json node;
   unsigned long long magnitude = 0;
-  unsigned long long limit = sign < 0 ? 1ull << 63 : LLONG_MAX;
+  unsigned lastDigit = sign < 0 ? 8 : 7;
   if (*pCursor == '0') {
     ++pCursor;
     if (pCursor < pEnd && (*pCursor == '.' || *pCursor == 'e' || *pCursor == 'E'))
@@ -3465,7 +3620,8 @@ JSON_INLINE static Json::Status ParseNumberNode(u32& nodeOffset, char* pBase, si
     unsigned character = *pCursor & 255;
     if ('0' <= character && character <= '9') {
       unsigned digit = character - '0';
-      if (magnitude > (limit - digit) / 10)
+      if (magnitude > 922337203685477580ull ||
+          (magnitude == 922337203685477580ull && digit > lastDigit))
         goto UseDouble;
       magnitude = magnitude * 10 + digit;
       ++pCursor;
@@ -3540,23 +3696,26 @@ static size_t JsonUtf8SequenceLength(const char* pStart, const char* pEnd)
 static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
 {
   const char* pCursor = pStart;
-  auto isPlainAscii = [](unsigned byte) { return byte >= 0x20 && byte < 0x80 && byte != '"' && byte != '\\'; };
-  while (pEnd - pCursor >= 4) {
-    if (!isPlainAscii(pCursor[0] & 255))
-      break;
-    if (!isPlainAscii(pCursor[1] & 255)) {
-      pCursor += 1;
+  constexpr uint64_t ByteOnes = 0x0101010101010101ull;
+  constexpr uint64_t HighBits = 0x8080808080808080ull;
+  while (pEnd - pCursor >= 8) {
+    uint64_t bytes;
+    memcpy(&bytes, pCursor, sizeof(bytes));
+    uint64_t quoteBytes = bytes ^ ByteOnes * '"';
+    uint64_t slashBytes = bytes ^ ByteOnes * '\\';
+    uint64_t special = ((quoteBytes - ByteOnes) & ~quoteBytes & HighBits) |
+                       ((slashBytes - ByteOnes) & ~slashBytes & HighBits) |
+                       ((bytes - ByteOnes * 0x20) & ~bytes & HighBits) |
+                       (bytes & HighBits);
+    if (special) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+      pCursor += __builtin_ctzll(special) / 8;
+#else
+      pCursor += __builtin_clzll(special) / 8;
+#endif
       break;
     }
-    if (!isPlainAscii(pCursor[2] & 255)) {
-      pCursor += 2;
-      break;
-    }
-    if (!isPlainAscii(pCursor[3] & 255)) {
-      pCursor += 3;
-      break;
-    }
-    pCursor += 4;
+    pCursor += 8;
   }
   while (pCursor < pEnd) {
     unsigned byte = *pCursor & 255;
@@ -3582,6 +3741,155 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
   return nullptr;
 }
 
+JSON_INLINE static bool TryParseSimpleNode(u32& nodeOffset, Json::Status& status, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd)
+{
+  using enum Json::Status;
+  using enum Json::Type;
+  size_t subtreeEnd = back;
+  Json node;
+  switch (*pCursor)
+  {
+    case 'n':
+      if (pEnd - pCursor < 4 || READ32LE(pCursor) != READ32LE("null"))
+        return false;
+      pCursor += 4;
+      break;
+    case 'f':
+      if (pEnd - pCursor < 5 || READ32LE(pCursor + 1) != READ32LE("alse"))
+        return false;
+      pCursor += 5;
+      node.type = TYPE_BOOL;
+      node.boolValue = false;
+      break;
+    case 't':
+      if (pEnd - pCursor < 4 || READ32LE(pCursor) != READ32LE("true"))
+        return false;
+      pCursor += 4;
+      node.type = TYPE_BOOL;
+      node.boolValue = true;
+      break;
+    case '"': {
+      const char* pStringStart = pCursor + 1;
+      const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd);
+      if (!pStringEnd)
+        return false;
+      size_t size = pStringEnd - pStringStart;
+      u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+      if (stringOffset == InvalidOffset) {
+        status = INSUFFICIENT_SPACE;
+        return true;
+      }
+      memcpy(pBase + stringOffset, pStringStart, size);
+      pBase[stringOffset + size] = '\0';
+      pCursor = pStringEnd + 1;
+      node.type = TYPE_PLAIN_STRING;
+      node.stringOffset = stringOffset;
+      node.stringSize = (u32)size;
+      break;
+    }
+    default:
+      return false;
+  }
+  status = StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+  return true;
+}
+
+[[gnu::flatten]] static Json::Status ParseJsonRecursive(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int context, int depth);
+
+static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int depth, size_t subtreeEnd)
+{
+  using enum Json::Status;
+  using enum Json::Type;
+  if (!depth)
+    return MALFORMED;
+  Json node;
+  u32 elementCount = 0;
+  u32 lastChildOffset = 0;
+  bool reversedScalarArray = true;
+  int context = ARRAY;
+  for (;;) {
+    u32 childOffset;
+    Json::Status status;
+    const char* pNumber = pCursor;
+    while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
+      ++pNumber;
+    if (context & COMMA) {
+      if (pNumber < pEnd && *pNumber == ',') {
+        do {
+          ++pNumber;
+        } while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'));
+      } else {
+        pNumber = pEnd;
+      }
+    }
+    if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
+      pCursor = pNumber;
+      status = ParseNumberNode(childOffset, pBase, used, back, pCursor, pEnd);
+    } else if (pNumber < pEnd) {
+      const char* pValue = pNumber;
+      if (TryParseSimpleNode(childOffset, status, pBase, used, back, pValue, pEnd))
+        pCursor = pValue;
+      else
+        status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+    } else {
+      status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+    }
+    if (status == ABSENT_VALUE) {
+      if (elementCount && reversedScalarArray) {
+        node.type = TYPE_ARRAY;
+        node.arrayOffset = lastChildOffset;
+        node.arraySize = elementCount | Json::ReversedArrayFlag;
+        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+      }
+      size_t arraySize = (size_t)elementCount * sizeof(Json);
+      u32 arrayOffset = BackAlloc(back, used, arraySize, alignof(Json));
+      if (arrayOffset == InvalidOffset)
+        return INSUFFICIENT_SPACE;
+      u32 cursorOffset = lastChildOffset;
+      for (u32 i = elementCount; i--;) {
+        const Json* pChild = (const Json*)(pBase + cursorOffset);
+        u32 childSpan = pChild->span;
+        u32 childOffset = arrayOffset + i * sizeof(Json);
+        JSON_ASSERT(cursorOffset >= childOffset);
+        u32 delta = cursorOffset - childOffset;
+        Json child = *pChild;
+        JSON_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
+        child.span += delta;
+        switch (child.type)
+        {
+          case TYPE_STRING:
+          case TYPE_PLAIN_STRING:
+            JSON_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
+            child.stringOffset += delta;
+            break;
+          case TYPE_ARRAY:
+            JSON_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
+            child.arrayOffset += delta;
+            break;
+          case TYPE_OBJECT:
+            JSON_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
+            child.objectOffset += delta;
+            break;
+          default:
+            break;
+        }
+        new (pBase + childOffset) Json(child);
+        cursorOffset += childSpan;
+      }
+      node.type = TYPE_ARRAY;
+      node.arrayOffset = arrayOffset;
+      node.arraySize = elementCount;
+      return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+    }
+    if (status != SUCCESS)
+      return status;
+    lastChildOffset = childOffset;
+    reversedScalarArray &= ((const Json*)(pBase + childOffset))->span == sizeof(Json);
+    ++elementCount;
+    context = ARRAY | COMMA;
+  }
+}
+
 ///////////////////////////////////////////////////////
 // ParseJson
 //  Parses one subtree backward into immutable buffer records.
@@ -3591,9 +3899,9 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
   using enum Json::Status;
   using enum Json::Type;
   char encodedBytes[Utf8MaximumSequenceSize];
-  unsigned long long integerMagnitude, integerLimit;
+  unsigned long long integerMagnitude;
   const char* pNumberStart;
-  int hexA, hexB, hexC, hexD, character, sign, byteCount, lowSurrogate;
+  int hexA, hexB, hexC, hexD, character, sign, byteCount, lowSurrogate, integerLastDigit;
   if (!depth)
     return MALFORMED;
   size_t subtreeEnd = back;
@@ -3692,12 +4000,13 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
         if (context & (COLON | COMMA | KEY))
           return MALFORMED;
         integerMagnitude = character - '0';
-        integerLimit = sign < 0 ? 1ull << 63 : LLONG_MAX;
+        integerLastDigit = sign < 0 ? 8 : 7;
         for (; pCursor < pEnd; ++pCursor) {
           character = *pCursor & 255;
           if (isdigit(character)) {
             unsigned digit = character - '0';
-            if (integerMagnitude > (integerLimit - digit) / 10)
+            if (integerMagnitude > 922337203685477580ull ||
+                (integerMagnitude == 922337203685477580ull && digit > (unsigned)integerLastDigit))
               goto UseDouble;
             integerMagnitude = integerMagnitude * 10 + digit;
           } else if (character == '.') {
@@ -3730,83 +4039,7 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
       case '[': {
         if (context & (COLON | COMMA | KEY))
           return MALFORMED;
-        u32 elementCount = 0;
-        u32 lastChildOffset = 0;
-        bool reversedScalarArray = true;
-        for (context = ARRAY;;) {
-          u32 childOffset;
-          Json::Status status;
-          const char* pNumber = pCursor;
-          while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
-            ++pNumber;
-          if (context & COMMA) {
-            if (pNumber < pEnd && *pNumber == ',') {
-              do {
-                ++pNumber;
-              } while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'));
-            } else {
-              pNumber = pEnd;
-            }
-          }
-          if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
-            pCursor = pNumber;
-            status = ParseNumberNode(childOffset, pBase, used, back, pCursor, pEnd);
-          } else {
-            status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
-          }
-          if (status == ABSENT_VALUE) {
-            if (elementCount && reversedScalarArray) {
-              node.type = TYPE_ARRAY;
-              node.arrayOffset = lastChildOffset;
-              node.arraySize = elementCount | Json::ReversedArrayFlag;
-              return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
-            }
-            size_t arraySize = (size_t)elementCount * sizeof(Json);
-            u32 arrayOffset = BackAlloc(back, used, arraySize, alignof(Json));
-            if (arrayOffset == InvalidOffset)
-              return INSUFFICIENT_SPACE;
-            u32 cursorOffset = lastChildOffset;
-            for (u32 i = elementCount; i--;) {
-              const Json* pChild = (const Json*)(pBase + cursorOffset);
-              u32 childSpan = pChild->span;
-              u32 childOffset = arrayOffset + i * sizeof(Json);
-              JSON_ASSERT(cursorOffset >= childOffset);
-              u32 delta = cursorOffset - childOffset;
-              Json child = *pChild;
-              JSON_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
-              child.span += delta;
-              switch (child.type)
-              {
-                case TYPE_STRING:
-                  JSON_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
-                  child.stringOffset += delta;
-                  break;
-                case TYPE_ARRAY:
-                  JSON_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
-                  child.arrayOffset += delta;
-                  break;
-                case TYPE_OBJECT:
-                  JSON_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
-                  child.objectOffset += delta;
-                  break;
-                default:
-                  break;
-              }
-              new (pBase + childOffset) Json(child);
-              cursorOffset += childSpan;
-            }
-            node.type = TYPE_ARRAY;
-            node.arrayOffset = arrayOffset;
-            node.arraySize = elementCount;
-            return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
-          }
-          if (status != SUCCESS)
-            return status;
-          lastChildOffset = childOffset;
-          reversedScalarArray &= ((const Json*)(pBase + childOffset))->span == sizeof(Json);
-          ++elementCount;
-          context = ARRAY | COMMA;
-        }
+        return ParseArrayNode(nodeOffset, pBase, used, back, pCursor, pEnd, depth, subtreeEnd);
       }
 
       case ']':
@@ -3818,11 +4051,45 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
       case '{': {
         if (context & (COLON | COMMA | KEY))
           return MALFORMED;
+        size_t scratchMark = used;
         u32 memberCount = 0;
-        u32 lastValueOffset = 0;
         for (context = KEY | OBJECT;;) {
           u32 keyOffset;
-          Json::Status status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+          Json::Status status;
+          const char* pKeyStart = pCursor;
+          while (pKeyStart < pEnd && (*pKeyStart == ' ' || *pKeyStart == '\n' || *pKeyStart == '\r' || *pKeyStart == '\t'))
+            ++pKeyStart;
+          if (context & COMMA) {
+            if (pKeyStart < pEnd && *pKeyStart == ',') {
+              do {
+                ++pKeyStart;
+              } while (pKeyStart < pEnd && (*pKeyStart == ' ' || *pKeyStart == '\n' || *pKeyStart == '\r' || *pKeyStart == '\t'));
+            } else {
+              pKeyStart = pEnd;
+            }
+          }
+          if (pKeyStart < pEnd && *pKeyStart == '"') {
+            const char* pStringStart = pKeyStart + 1;
+            if (const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd)) {
+              size_t keyEnd = back;
+              size_t size = pStringEnd - pStringStart;
+              u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+              if (stringOffset == InvalidOffset)
+                return INSUFFICIENT_SPACE;
+              memcpy(pBase + stringOffset, pStringStart, size);
+              pBase[stringOffset + size] = '\0';
+              Json key;
+              key.type = TYPE_PLAIN_STRING;
+              key.stringOffset = stringOffset;
+              key.stringSize = (u32)size;
+              status = StoreNode(pBase, used, back, key, keyEnd, &keyOffset);
+              pCursor = pStringEnd + 1;
+            } else {
+              status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+            }
+          } else {
+            status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+          }
           if (status == ABSENT_VALUE) {
             size_t indexSize = (size_t)memberCount * (sizeof(u32) + sizeof(ObjectEntry));
             if (memberCount > ObjectBinarySearchThreshold)
@@ -3833,19 +4100,17 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
             char* pIndex = pBase + indexOffset;
             u32* pKeySizes = ObjectKeySizes(pIndex);
             ObjectEntry* pEntries = ObjectEntries(pIndex, memberCount);
-            u32 cursorOffset = lastValueOffset;
-            for (u32 i = memberCount; i--;) {
-              const Json* pValue = (const Json*)(pBase + cursorOffset);
-              u32 valueOffset = cursorOffset;
-              cursorOffset += pValue->span;
-              const Json* pKey = (const Json*)(pBase + cursorOffset);
-              JSON_ASSERT(pKey->type == TYPE_STRING);
+            const u32* pOffsets = (const u32*)(pBase + scratchMark);
+            for (u32 i = 0; i < memberCount; ++i) {
+              u32 storedKeyOffset = pOffsets[2 * i];
+              u32 valueOffset = pOffsets[2 * i + 1];
+              const Json* pKey = (const Json*)(pBase + storedKeyOffset);
+              JSON_ASSERT(pKey->IsString());
               pKeySizes[i] = pKey->stringSize;
               pEntries[i] = {
-                cursorOffset - indexOffset,
+                storedKeyOffset - indexOffset,
                 valueOffset - indexOffset,
               };
-              cursorOffset += pKey->span;
             }
             if (memberCount > ObjectBinarySearchThreshold) {
               u32* pOrder = ObjectSortOrder(pIndex, memberCount);
@@ -3863,6 +4128,7 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
             node.type = TYPE_OBJECT;
             node.objectOffset = indexOffset;
             node.objectSize = memberCount;
+            used = scratchMark;
             return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
           }
           if (status != SUCCESS)
@@ -3871,10 +4137,42 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
           if (!pKey->IsString())
             return MALFORMED;
           u32 valueOffset;
-          status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
+          const char* pNumber = pCursor;
+          while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
+            ++pNumber;
+          if (pNumber < pEnd && *pNumber == ':') {
+            do {
+              ++pNumber;
+            } while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'));
+          } else {
+            pNumber = pEnd;
+          }
+          if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
+            pCursor = pNumber;
+            status = ParseNumberNode(valueOffset, pBase, used, back, pCursor, pEnd);
+          } else if (pNumber < pEnd && *pNumber == '[') {
+            size_t childEnd = back;
+            pCursor = pNumber + 1;
+            status = ParseArrayNode(valueOffset, pBase, used, back, pCursor, pEnd, depth - 1, childEnd);
+          } else if (pNumber < pEnd) {
+            const char* pValue = pNumber;
+            if (TryParseSimpleNode(valueOffset, status, pBase, used, back, pValue, pEnd))
+              pCursor = pValue;
+            else
+              status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
+          } else {
+            status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
+          }
           if (status != SUCCESS)
             return status;
-          lastValueOffset = valueOffset;
+          if (back - used < 2 * sizeof(u32)) {
+            JSON_WARN("JSON parse buffer has no room for object offset scratch space.\n");
+            return INSUFFICIENT_SPACE;
+          }
+          u32* pOffsets = (u32*)(pBase + used);
+          pOffsets[0] = keyOffset;
+          pOffsets[1] = valueOffset;
+          used += 2 * sizeof(u32);
           ++memberCount;
           context = KEY | COMMA | OBJECT;
         }
@@ -3892,7 +4190,7 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
           memcpy(pBase + stringOffset, pStringStart, size);
           pBase[stringOffset + size] = '\0';
           pCursor = pStringEnd + 1;
-          node.type = TYPE_STRING;
+          node.type = TYPE_PLAIN_STRING;
           node.stringOffset = stringOffset;
           node.stringSize = (u32)size;
           return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
@@ -4037,12 +4335,13 @@ size_t Json::EstimateSize(const char* pData, size_t size)
   // Every value or key consumes at least one distinct input byte. In the
   // worst case a value owns one node, one copied array slot, one aggregate
   // header, and their alignment padding. A key owns one node, one cached size,
-  // one object entry, at most one sorted index, and node padding. Decoded
-  // strings plus terminators consume less space than their source tokens.
-  // These bounds are currently 49 bytes per value and 39 per key, plus one
+  // one object entry, one temporary key/value offset pair, at most one sorted
+  // index, and node padding. Decoded strings plus terminators consume less
+  // space than their source tokens. These bounds are currently 49 bytes per
+  // value and 47 per key, plus one
   // string byte.
   constexpr uint64_t ValueBytes = 2 * sizeof(Json) + 2 * (alignof(Json) - 1) + alignof(u32) - 1;
-  constexpr uint64_t KeyBytes = sizeof(Json) + 2 * sizeof(u32) + sizeof(ObjectEntry) + alignof(Json) - 1;
+  constexpr uint64_t KeyBytes = sizeof(Json) + 4 * sizeof(u32) + sizeof(ObjectEntry) + alignof(Json) - 1;
   constexpr uint64_t BytesPerInputByte = 64;
   static_assert((ValueBytes > KeyBytes ? ValueBytes : KeyBytes) + 1 <= BytesPerInputByte,
                 "JSON parse-size multiplier no longer covers the immutable layout.");

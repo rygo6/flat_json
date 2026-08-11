@@ -206,6 +206,7 @@ struct Json
     TYPE_STRING,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    TYPE_PLAIN_STRING,  // Internal no-rescan tag; IsString() includes it.
   };
 
   enum Status
@@ -248,7 +249,7 @@ struct Json
   JSON_INLINE bool IsLong() const { return type == TYPE_LONG; }
   JSON_INLINE bool IsFloat() const { return type == TYPE_FLOAT; }
   JSON_INLINE bool IsDouble() const { return type == TYPE_DOUBLE; }
-  JSON_INLINE bool IsString() const { return type == TYPE_STRING; }
+  JSON_INLINE bool IsString() const { return type == TYPE_STRING || type == TYPE_PLAIN_STRING; }
   JSON_INLINE bool IsArray() const { return type == TYPE_ARRAY; }
   JSON_INLINE bool IsObject() const { return type == TYPE_OBJECT; }
 

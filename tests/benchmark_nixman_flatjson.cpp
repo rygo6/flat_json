@@ -7,10 +7,11 @@
 struct NixmanFlatJsonBenchmark
 {
   static constexpr const char* Name = "niXman/flatjson";
-  static constexpr bool SupportsCompactSerialize = true;
-  static constexpr bool SupportsPrettySerialize = true;
-  static constexpr bool SupportsCommonNumericParse = false;
-  static constexpr bool SupportsExactNumericParse = false;
+  static constexpr bool SupportsCompactSerialize = false;
+  static constexpr bool SupportsPrettySerialize = false;
+  static constexpr const char* SerializeUnavailableSuffix = "*";
+  static constexpr bool SupportsParse32Bit = false;
+  static constexpr bool SupportsParse64Bit = false;
 
   flatjson::fjson document;
   flatjson::fjson array;
@@ -36,19 +37,6 @@ struct NixmanFlatJsonBenchmark
            floating.to_double() == benchmark::FloatingValue &&
            stringValue.size() == benchmark::StringSize &&
            !memcmp(stringValue.data(), benchmark::StringValue, benchmark::StringSize);
-  }
-
-  uint64_t Parse(size_t iterations)
-  {
-    uint64_t result = 0;
-    for (size_t i = 0; i < iterations; ++i) {
-      flatjson::fjson parsed(benchmark::JsonText, benchmark::JsonText + benchmark::JsonSize);
-      if (!parsed.is_valid())
-        abort();
-      result += parsed.size();
-      benchmark::DoNotOptimize(parsed);
-    }
-    return result;
   }
 
   uint64_t SerializeCompact(size_t iterations)
