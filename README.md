@@ -8,6 +8,8 @@ It also writes compact or pretty JSON directly to caller-owned memory or a
 growing C file stream. Nested `JsonObject`, `JsonArray`, and `JsonValue`
 initializers are consumed immediately without building an intermediate tree.
 
+`flat_json` is written in the [Flat C++ dialect](https://github.com/rygo6/cb).
+
 Requirements: C++23, Clang or GCC, and 64-bit ARM64 or x86-64.
 
 ## Credits
