@@ -91,6 +91,130 @@ is authoritative because decoded strings may contain embedded NUL bytes.
 The parser accepts up to 19 nested arrays or objects; deeper input returns
 `MALFORMED`.
 
+### Try accessors
+
+Every typed getter has a `Try` form taking a member key and an output pointer.
+It returns false when the key is absent or the value is the wrong type, and the
+output is left untouched — so pre-loaded defaults survive an absent member:
+
+```cpp
+u32 retries = 3;
+float timeout = 30.0f;
+root.TryGetU32("retries", &retries);
+root.TryGetFloat("timeout", &timeout);
+```
+
+| Method | Output | Accepts |
+| --- | --- | --- |
+| `TryGetBool` | `bool` | `TYPE_BOOL` |
+| `TryGetLong` | `long long` | `TYPE_LONG` |
+| `TryGetU32` | `u32` | `TYPE_LONG` within `[0, UINT32_MAX]` |
+| `TryGetFloat` | `float` | any numeric type, converted |
+| `TryGetDouble` | `double` | any numeric type, converted |
+| `TryGetString` | `JsonString` | string |
+| `TryGetArray` | `const Json*` | array |
+| `TryGetObject` | `const Json*` | object |
+
+`TryGetArray` and `TryGetObject` pair with a C++17 if-init declaration, so the
+node pointer is scoped to exactly the block that checked it:
+
+```cpp
+if (const Json* pItems; root.TryGetArray("items", &pItems) && pItems->GetSize() <= ItemCapacity) {
+    u32 count = (u32)pItems->GetSize();
+    // ...
+}
+```
+
+### Copy and parse helpers
+
+`TryCopyString` copies a string member into caller memory, NUL-terminated.
+Fixed `char` arrays convert to the `JsonSpan<char>` output automatically. It
+returns false when the member is absent, not a string, larger than the output,
+or contains an embedded NUL — a truncated copy never reports success:
+
+```cpp
+char name[32];
+if (!root.TryCopyString("name", name))
+    return false;
+```
+
+`TryCopyFloatArray` and `TryCopyDoubleArray` copy a fixed-length numeric array
+member; the output span's size is the required element count, and every element
+must be numeric:
+
+```cpp
+float color[4];
+if (!root.TryCopyFloatArray("color", color))
+    return false;
+```
+
+`TryParseHexString` parses a string member as a `u32` via `strtoul` base 0,
+accepting `"0x1a2b"` hex or decimal — for values conventionally written in hex
+that JSON numbers cannot express, such as hardware identifiers:
+
+```cpp
+u32 deviceId = 0;
+root.TryParseHexString("deviceId", &deviceId);
+```
+
+### Iteration
+
+`Elements()` and `Members()` support range-for over arrays and objects. Like
+`GetArray()` and `GetObject()`, they assert the type in `DEBUG` builds. The
+`Try` forms never assert and iterate zero times instead: on the value itself
+when it is the wrong type, or with a key when the member is absent or the wrong
+type.
+
+```cpp
+for (const Json& entry : root["values"].Elements())
+    total += entry.GetNumber();
+
+for (const Json& entry : root.TryElements("tags")) {
+    if (!entry.IsString())
+        continue;
+    // ...
+}
+
+for (Json::Member member : root.TryMembers("attributes")) {
+    JsonString key = member.key;
+    const Json& value = member.value;
+}
+```
+
+`MemberAt(index, &key)` gives indexed access to object members in source order.
+
+### Documents
+
+`FixedJsonDocument<Capacity>` bundles caller-filled text storage with a 4x
+records arena. Fill `buffer` (a socket read, a request body), then parse in
+place; `root` stays null on failure:
+
+```cpp
+FixedJsonDocument<16 * 1024> document;
+size_t length = ReadBody(document.buffer, sizeof(document.buffer));
+
+u32 schema = 0;
+if (!document.Parse(length) || !document.root->TryGetU32("schema", &schema))
+    return false;
+```
+
+`JsonFileMap` maps, parses, and unmaps a JSON file in its constructor through
+`Json::ParseFile()`; `status` carries the parser verdict, and a missing file is
+a silent `IO_ERROR` so callers can treat it as an ordinary absent-config case:
+
+```cpp
+JsonFileMap settings("settings.json");
+if (!settings.IsValid())
+    return false;
+
+JsonString theme;
+if (!settings.root->TryGetString("theme", &theme))
+    return false;
+```
+
+The default arena is 16 KiB; larger files take an explicit capacity:
+`JsonFileMap<64 * 1024>`.
+
 ## Write JSON
 
 Fixed `char` arrays and compatible `std::span` values convert to
