@@ -251,6 +251,10 @@ struct FileMap
   FileMap& operator=(FileMap&&) = delete;
 
   bool IsValid() const { return data != nullptr; }
+
+  template<typename S>
+    requires requires(size_t count, const char* pText) { S(count, pText); }
+  operator S() const { return S(size, (const char*)data); }
 };
 
 ///////////////////////////////////////////////////////

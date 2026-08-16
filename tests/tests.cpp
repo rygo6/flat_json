@@ -136,7 +136,7 @@ direct_serialization_test()
     Json::Status status = Json::Parse(round_trip_output, strlen(round_trip_output), &parse_arena);
     if (status != Json::SUCCESS)
         exit(44);
-    const Json* pJson = parse_arena.Root();
+    const Json* pJson = parse_arena.pRoot;
     flat::JsonString model = (*pJson)["model"].GetString();
     if (model.size != 5 || strcmp(model.pData, "gpt-5") || !(*pJson)["stream"].GetBool())
         exit(44);
@@ -161,33 +161,33 @@ public_soft_failure_test()
 
     if (Json::Parse("null", (flat::FixedJsonBuffer<64>*)nullptr) != Json::INVALID_ARGUMENT)
         exit(200);
-    if (Json::Parse((const char*)nullptr, 1, &arena) != Json::INVALID_ARGUMENT || arena.Root())
+    if (Json::Parse((const char*)nullptr, 1, &arena) != Json::INVALID_ARGUMENT || arena.pRoot)
         exit(202);
-    if (Json::Parse((const char*)nullptr, 0, &arena) != Json::ABSENT_VALUE || arena.Root())
+    if (Json::Parse((const char*)nullptr, 0, &arena) != Json::ABSENT_VALUE || arena.pRoot)
         exit(203);
     Json::Status smallArenaStatus = Json::Parse("1.00000000000000011102230246251565404236316680908203125", &arena);
-    if (smallArenaStatus != Json::INSUFFICIENT_SPACE || arena.Root()) {
+    if (smallArenaStatus != Json::INSUFFICIENT_SPACE || arena.pRoot) {
         fprintf(stderr, "small numeric arena returned %s\n", Json::StatusToString(smallArenaStatus));
         exit(210);
     }
-    if (Json::Parse("null", &arena) != Json::SUCCESS || !arena.Root() || !arena.Root()->IsNull())
+    if (Json::Parse("null", &arena) != Json::SUCCESS || !arena.pRoot || !arena->IsNull())
         exit(211);
 
     flat::FixedJsonBuffer<24> insufficientStringArena;
-    if (Json::Parse(R"("123456789")", &insufficientStringArena) != Json::INSUFFICIENT_SPACE || insufficientStringArena.Root())
+    if (Json::Parse(R"("123456789")", &insufficientStringArena) != Json::INSUFFICIENT_SPACE || insufficientStringArena.pRoot)
         exit(212);
     flat::FixedJsonBuffer<40> insufficientEscapeArena;
     if (Json::Parse(R"("\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061")",
-                    &insufficientEscapeArena) != Json::INSUFFICIENT_SPACE || insufficientEscapeArena.Root())
+                    &insufficientEscapeArena) != Json::INSUFFICIENT_SPACE || insufficientEscapeArena.pRoot)
         exit(213);
     flat::FixedJsonBuffer<31> insufficientArrayArena;
-    if (Json::Parse("[0]", &insufficientArrayArena) != Json::INSUFFICIENT_SPACE || insufficientArrayArena.Root())
+    if (Json::Parse("[0]", &insufficientArrayArena) != Json::INSUFFICIENT_SPACE || insufficientArrayArena.pRoot)
         exit(214);
     flat::FixedJsonBuffer<64> insufficientObjectArena;
-    if (Json::Parse(R"({"a":0})", &insufficientObjectArena) != Json::INSUFFICIENT_SPACE || insufficientObjectArena.Root())
+    if (Json::Parse(R"({"a":0})", &insufficientObjectArena) != Json::INSUFFICIENT_SPACE || insufficientObjectArena.pRoot)
         exit(215);
 
-    if (Json::Parse(flat::FileMap("bin/file-does-not-exist.json"), &arena) != Json::IO_ERROR || arena.Root())
+    if (Json::Parse(flat::FileMap("bin/file-does-not-exist.json"), &arena) != Json::ABSENT_VALUE || arena.pRoot)
         exit(207);
     flat::FileMap invalidInput(nullptr);
     if (invalidInput.IsValid())
@@ -236,7 +236,7 @@ file_map_round_trip_test()
     flat::FixedJsonBuffer<512> arena;
     if (Json::Parse(flat::FileMap(Path), &arena) != Json::SUCCESS)
         exit(82);
-    const Json* pJson = arena.Root();
+    const Json* pJson = arena.pRoot;
     flat::JsonString model = (*pJson)["model"].GetString();
     if (model.size != 5 || strcmp(model.pData, "gpt-5") || !(*pJson)["stream"].GetBool() ||
         (*pJson)["number"].GetDouble() != 3.14 || strcmp((*pJson)["escaped"].GetString().pData, "line\n"))
@@ -256,7 +256,7 @@ writable_file_round_trip_test()
 
     {
         flat::WritableFile output(Path);
-        if (!output.IsValid() || flat::WriteJson(*sourceArena.Root(), output) != Json::SUCCESS)
+        if (!output.IsValid() || flat::WriteJson(*sourceArena.pRoot, output) != Json::SUCCESS)
             exit(220);
     }
 
@@ -269,7 +269,7 @@ writable_file_round_trip_test()
     flat::FixedJsonBuffer<2048> destinationArena;
     if (Json::Parse(flat::FileMap(Path), &destinationArena) != Json::SUCCESS)
         exit(222);
-    const Json* pJson = destinationArena.Root();
+    const Json* pJson = destinationArena.pRoot;
     if (strcmp((*pJson)["name"].GetString().pData, "flat-json") ||
         !(*pJson)["enabled"].GetBool() ||
         (*pJson)["values"][0].GetLong() != -1 ||
@@ -304,7 +304,7 @@ large_object_index_test()
     flat::FixedJsonBuffer<32768> arena;
     if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
         exit(55);
-    const Json* pJson = arena.Root();
+    const Json* pJson = arena.pRoot;
     if (pJson->GetSize() != 101 ||
         !pJson->Contains("key100") ||
         !pJson->Contains("key000") ||
@@ -340,7 +340,7 @@ medium_object_lookup_test()
     flat::FixedJsonBuffer<8192> arena;
     if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
         exit(224);
-    const Json* pJson = arena.Root();
+    const Json* pJson = arena.pRoot;
     if ((*pJson)["key00"].GetLong() != 0 ||
         (*pJson)["key15"].GetLong() != 15 ||
         (*pJson)["key31"].GetLong() != 31 ||
@@ -388,7 +388,7 @@ numeric_arena_test()
         Json::Status status = Json::Parse(text, strlen(text), &parse_arena);
         if (status != Json::SUCCESS)
             exit(28);
-        const Json* pJson = parse_arena.Root();
+        const Json* pJson = parse_arena.pRoot;
         double expected = values[i] == 0.0 ? 0.0 : values[i];
         if (DoubleBits(pJson->GetNumber()) != DoubleBits(expected))
             exit(29);
@@ -450,7 +450,7 @@ fast_decimal_differential_test()
 
             flat::FixedJsonBuffer<512> arena;
             if (Json::Parse(text, size, &arena) != Json::SUCCESS ||
-                DoubleBits(arena.Root()->GetDouble()) != DoubleBits(expected))
+                DoubleBits(arena->GetDouble()) != DoubleBits(expected))
                 exit(32);
         }
     }
@@ -476,7 +476,7 @@ strict_string_test()
     };
     for (size_t i = 0; i < ARRAYLEN(invalid); ++i) {
         flat::FixedJsonBuffer<1024> arena;
-        if (Json::Parse(invalid[i].data, invalid[i].size, &arena) != Json::MALFORMED || arena.Root())
+        if (Json::Parse(invalid[i].data, invalid[i].size, &arena) != Json::MALFORMED || arena.pRoot)
             exit(31);
     }
 
@@ -493,7 +493,7 @@ strict_string_test()
         flat::FixedJsonBuffer<1024> arena;
         if (Json::Parse(valid[i].data, valid[i].size, &arena) != Json::SUCCESS)
             exit(32);
-        const Json* pJson = arena.Root();
+        const Json* pJson = arena.pRoot;
         flat::JsonString string = (*pJson)[0].GetString();
         if (string.size != valid_sizes[i] || string[string.size] != '\0')
             exit(60);
@@ -616,7 +616,7 @@ canonicalize_if_accepted(const char* pData, size_t size, char* pCanonical, size_
             exit(301);
         return false;
     }
-    if (first.Root()->ToString(flat::JsonSpan<char>(capacity, pCanonical)) != Json::SUCCESS)
+    if (first->ToString(flat::JsonSpan<char>(capacity, pCanonical)) != Json::SUCCESS)
         exit(302);
 
     size_t estimate = Json::EstimateSize(pData, size);
@@ -628,13 +628,13 @@ canonicalize_if_accepted(const char* pData, size_t size, char* pCanonical, size_
         exit(304);
 
     char pretty[32 * 1024];
-    if (first.Root()->ToStringPretty(pretty) != Json::SUCCESS)
+    if (first->ToStringPretty(pretty) != Json::SUCCESS)
         exit(305);
     flat::FixedJsonBuffer<128 * 1024> second;
     if (Json::Parse(pretty, strlen(pretty), &second) != Json::SUCCESS)
         exit(306);
     char secondCanonical[32 * 1024];
-    if (second.Root()->ToString(secondCanonical) != Json::SUCCESS || strcmp(secondCanonical, pCanonical))
+    if (second->ToString(secondCanonical) != Json::SUCCESS || strcmp(secondCanonical, pCanonical))
         exit(307);
     return true;
 }
@@ -761,12 +761,12 @@ numeric_bit_pattern_fuzz_test()
                     (unsigned long long)bits, text, Json::StatusToString(status));
             exit(313);
         }
-        double parsed = arena.Root()->GetNumber();
+        double parsed = arena->GetNumber();
         uint64_t expectedBits = value == 0 ? 0 : bits;
         if (DoubleBits(parsed) != expectedBits)
             exit(314);
         char canonical[4096];
-        if (arena.Root()->ToString(canonical) != Json::SUCCESS || strcmp(canonical, text))
+        if (arena->ToString(canonical) != Json::SUCCESS || strcmp(canonical, text))
             exit(315);
     }
 
@@ -786,7 +786,7 @@ numeric_bit_pattern_fuzz_test()
                     bits, text, Json::StatusToString(status));
             exit(317);
         }
-        float parsed = (float)arena.Root()->GetNumber();
+        float parsed = (float)arena->GetNumber();
         uint32_t parsedBits;
         memcpy(&parsedBits, &parsed, sizeof(parsedBits));
         uint32_t expectedBits = value == 0 ? 0 : bits;
@@ -802,8 +802,8 @@ numeric_bit_pattern_fuzz_test()
         if (flat::WriteJson(value, text) != Json::SUCCESS)
             exit(319);
         flat::FixedJsonBuffer<512> arena;
-        if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS || !arena.Root()->IsLong() ||
-            arena.Root()->GetLong() != value)
+        if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS || !arena->IsLong() ||
+            arena->GetLong() != value)
             exit(320);
     }
 }
@@ -857,7 +857,7 @@ output_boundary_canary_test()
     flat::FixedJsonBuffer<16 * 1024> arena;
     if (Json::Parse(Source, &arena) != Json::SUCCESS)
         exit(321);
-    const Json* pJson = arena.Root();
+    const Json* pJson = arena.pRoot;
     output_boundary_canary_case([&](flat::JsonSpan<char> output) { return pJson->ToString(output); }, 322);
     output_boundary_canary_case([&](flat::JsonSpan<char> output) { return pJson->ToStringPretty(output); }, 327);
     output_boundary_canary_case([](flat::JsonSpan<char> output) {
@@ -889,19 +889,19 @@ object_threshold_fuzz_test()
 
         flat::FixedJsonBuffer<128 * 1024> arena;
         if (Json::Parse(text, (size_t)(pCursor - text), &arena) != Json::SUCCESS ||
-            arena.Root()->GetSize() != (size_t)count)
+            arena->GetSize() != (size_t)count)
             exit(338);
         for (int key = 0; key < count; ++key) {
             char name[16];
             int size = snprintf(name, sizeof(name), "key%03d", key);
             flat::JsonString keyName((size_t)size, name);
-            if (!arena.Root()->HasKey(keyName) || (*arena.Root())[keyName].GetLong() != key)
+            if (!arena->HasKey(keyName) || (*arena.pRoot)[keyName].GetLong() != key)
                 exit(339);
         }
-        if (arena.Root()->HasKey("key999") || arena.Root()->HasKey("missing"))
+        if (arena->HasKey("key999") || arena->HasKey("missing"))
             exit(340);
         char output[32 * 1024];
-        if (arena.Root()->ToString(output) != Json::SUCCESS || strcmp(output, text))
+        if (arena->ToString(output) != Json::SUCCESS || strcmp(output, text))
             exit(341);
     }
 }
@@ -915,15 +915,15 @@ embedded_nul_key_test()
         exit(342);
     const char nulKey[] = { 'a', '\0', 'b' };
     const char onlyNul[] = { '\0' };
-    flat::JsonString value = (*arena.Root())["value"].GetString();
-    if ((*arena.Root())[flat::JsonString(sizeof(nulKey), nulKey)].GetLong() != 1 ||
-        (*arena.Root())["a"].GetLong() != 2 ||
-        (*arena.Root())[""].GetLong() != 3 ||
-        (*arena.Root())[flat::JsonString(sizeof(onlyNul), onlyNul)].GetLong() != 4 ||
+    flat::JsonString value = (*arena.pRoot)["value"].GetString();
+    if ((*arena.pRoot)[flat::JsonString(sizeof(nulKey), nulKey)].GetLong() != 1 ||
+        (*arena.pRoot)["a"].GetLong() != 2 ||
+        (*arena.pRoot)[""].GetLong() != 3 ||
+        (*arena.pRoot)[flat::JsonString(sizeof(onlyNul), onlyNul)].GetLong() != 4 ||
         value.size != 3 || value[0] != 'x' || value[1] != '\0' || value[2] != 'y' || value[3] != '\0')
         exit(343);
     char output[4096];
-    if (arena.Root()->ToString(output) != Json::SUCCESS || strcmp(output, Text))
+    if (arena->ToString(output) != Json::SUCCESS || strcmp(output, Text))
         exit(344);
 }
 
@@ -958,7 +958,7 @@ nesting_and_rollback_fuzz_test()
             flat::FixedJsonBuffer<16 * 1024> arena;
             Json::Status status = Json::Parse(text, size, &arena);
             Json::Status expected = depth <= 19 ? Json::SUCCESS : Json::MALFORMED;
-            if (status != expected || (status == Json::SUCCESS) != (arena.Root() != nullptr)) {
+            if (status != expected || (status == Json::SUCCESS) != (arena.pRoot != nullptr)) {
                 fprintf(stderr, "nesting boundary failed: alternating=%d depth=%d status=%s expected=%s\n",
                         alternating, depth, Json::StatusToString(status), Json::StatusToString(expected));
                 exit(345);
@@ -970,13 +970,13 @@ nesting_and_rollback_fuzz_test()
     flat::FixedJsonBuffer<16 * 1024> arena;
     if (Json::Parse(Stable, &arena) != Json::SUCCESS)
         exit(346);
-    const Json* pStable = arena.Root();
+    const Json* pStable = arena.pRoot;
     size_t back = arena.back;
     char expected[1024];
     if (pStable->ToString(expected) != Json::SUCCESS)
         exit(347);
     for (size_t size = 1; size < sizeof(Stable) - 1; ++size) {
-        if (Json::Parse(Stable, size, &arena) != Json::MALFORMED || arena.Root() || arena.back != back)
+        if (Json::Parse(Stable, size, &arena) != Json::MALFORMED || arena.pRoot || arena.back != back)
             exit(348);
         char output[1024];
         if (pStable->ToString(output) != Json::SUCCESS || strcmp(output, expected))
@@ -991,7 +991,7 @@ immutable_layout_test()
     Json::Status status = Json::Parse(R"([1,[2,3],{"x":4,"s":"ok"}])", &a);
     if (status != Json::SUCCESS)
         exit(20);
-    const Json* pJson = a.Root();
+    const Json* pJson = a.pRoot;
     flat::u32 root_offset = (flat::u32)((const char*)pJson - a.bytes);
     if ((const char*)pJson < a.bytes ||
         (const char*)pJson >= a.bytes + sizeof(a.bytes))
@@ -1033,7 +1033,7 @@ immutable_layout_test()
         exit(24);
     if (strcmp(output, R"([1,[2,3],{"x":4,"s":"ok"}])"))
         exit(24);
-    if (Json::Parse("[1,", &a) != Json::MALFORMED || a.Root() ||
+    if (Json::Parse("[1,", &a) != Json::MALFORMED || a.pRoot ||
         (*pJson)[2]["x"].GetLong() != 4)
         exit(26);
 }
@@ -1068,7 +1068,7 @@ static_arena_test()
     Json::Status status = Json::Parse("{\"k\": [true, null, 3.5]}", &g_static_arena);
     if (status != Json::SUCCESS)
         exit(9);
-    const Json* pJson = g_static_arena.Root();
+    const Json* pJson = g_static_arena.pRoot;
     if (pJson->ToString(text) != Json::SUCCESS ||
         strcmp(text, "{\"k\":[true,null,3.5]}"))
         exit(13);
@@ -1081,7 +1081,7 @@ stack_arena_test()
     Json::Status status = Json::Parse("[1, \"two\", {\"three\": 3}]", &a);
     if (status != Json::SUCCESS)
         exit(14);
-    const Json* pJson = a.Root();
+    const Json* pJson = a.pRoot;
     char text[16384];
     if (pJson->ToString(text) != Json::SUCCESS ||
         strcmp(text, "[1,\"two\",{\"three\":3}]"))
@@ -1097,7 +1097,7 @@ parse_test()
     Json::Status status = Json::Parse("{ \"content\":[[[0,10,20,3.14,40]]]}", &a);
     if (status != Json::SUCCESS)
         exit(3);
-    const Json* pJson = a.Root();
+    const Json* pJson = a.pRoot;
     char text[65536];
     if (pJson->ToString(text) != Json::SUCCESS ||
         strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
@@ -1109,7 +1109,7 @@ parse_test()
     status = Json::Parse("{ \"a\": 1, \"b\": [2,   3]}", &a);
     if (status != Json::SUCCESS)
         exit(6);
-    pJson = a.Root();
+    pJson = a.pRoot;
     if (pJson->ToString(text) != Json::SUCCESS ||
         strcmp(text, R"({"a":1,"b":[2,3]})"))
         exit(6);
@@ -1360,7 +1360,7 @@ round_trip_test()
               kRoundTrip[i].before);
             exit(10);
         }
-        const Json* pJson = a.Root();
+        const Json* pJson = a.pRoot;
         char got[65536];
         if (pJson->ToString(got) != Json::SUCCESS)
             exit(11);

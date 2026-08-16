@@ -52,7 +52,7 @@ probe_parse(const char* pData, size_t size)
 {
     flat::FixedJsonBuffer<1024 * 1024> buffer;
     flat::Json::Status status = flat::Json::Parse(pData, size, &buffer);
-    if (!is_parse_status(status) || (status == flat::Json::SUCCESS) != (buffer.Root() != nullptr))
+    if (!is_parse_status(status) || (status == flat::Json::SUCCESS) != (buffer.pRoot != nullptr))
         abort();
     return status;
 }
@@ -135,13 +135,13 @@ verify_round_trip(const char* pText, size_t size, const char* pCanonical, const 
         abort();
 
     size_t compactSize;
-    char* pCompact = serialize_checked(*buffer.Root(), false, output_capacity(size), &compactSize);
+    char* pCompact = serialize_checked(*buffer.pRoot, false, output_capacity(size), &compactSize);
     if (strcmp(pCompact, pCanonical))
         abort();
     free(pCompact);
 
     size_t prettySize;
-    char* pSecondPretty = serialize_checked(*buffer.Root(), true, output_capacity(size), &prettySize);
+    char* pSecondPretty = serialize_checked(*buffer.pRoot, true, output_capacity(size), &prettySize);
     if (strcmp(pSecondPretty, pPretty))
         abort();
     free(pSecondPretty);
@@ -150,9 +150,9 @@ verify_round_trip(const char* pText, size_t size, const char* pCanonical, const 
 static void
 verify_relocation(const flat::FixedJsonBuffer<1024 * 1024>& source, const char* pCanonical)
 {
-    if (source.back > sizeof(source.bytes) || !source.Root())
+    if (source.back > sizeof(source.bytes) || !source.pRoot)
         abort();
-    ptrdiff_t rootOffset = (const char*)source.Root() - source.bytes;
+    ptrdiff_t rootOffset = (const char*)source.pRoot - source.bytes;
     if (rootOffset < 0 || (size_t)rootOffset >= sizeof(source.bytes))
         abort();
 
@@ -163,7 +163,7 @@ verify_relocation(const flat::FixedJsonBuffer<1024 * 1024>& source, const char* 
     relocated.pRoot = (const flat::Json*)(relocated.bytes + rootOffset);
 
     size_t size;
-    char* pRelocated = serialize_checked(*relocated.Root(), false,
+    char* pRelocated = serialize_checked(*relocated.pRoot, false,
                                          output_capacity(strlen(pCanonical)), &size);
     if (strcmp(pRelocated, pCanonical))
         abort();
@@ -210,7 +210,7 @@ main()
     if (estimate == SIZE_MAX)
         abort();
 
-    const flat::Json* pJson = a.Root();
+    const flat::Json* pJson = a.pRoot;
     size_t capacity = output_capacity(n);
     size_t compactSize;
     char* pCompact = serialize_checked(*pJson, false, capacity, &compactSize);
