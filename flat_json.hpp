@@ -60,11 +60,8 @@
 #endif
 
 #ifndef JSON_VERBOSE
-#ifdef JSON_ENABLE_VERBOSE
+#define JSON_ENABLE_VERBOSE
 #define JSON_VERBOSE(format, ...) JSON_INFO(format __VA_OPT__(,) __VA_ARGS__)
-#else
-#define JSON_VERBOSE(format, ...) ((void)0)
-#endif
 #endif
 
 #ifndef JSON_PANIC
