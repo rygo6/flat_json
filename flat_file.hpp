@@ -184,7 +184,8 @@ struct WritableFile
     failed = true;
   }
   void Append(const char* pData, size_t size) { Write(pData, size); }
-  template<size_t Size> void Append(const char (&text)[Size]) { Append(text, Size - 1); }
+  template<size_t Size>
+  void Append(const char (&text)[Size]) { Append(text, Size - 1); }
 
   void AppendQuoted(const char* pData, size_t size)
   {

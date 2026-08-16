@@ -124,7 +124,8 @@ namespace double_conversion {
 // be implementation dependent.  Most compilers (gcc-4.2 and MSVC 2005)
 // will completely optimize BitCast away.
 //
-template<typename Destination, typename Source> Destination BitCast(const Source& source)
+template<typename Destination, typename Source>
+Destination BitCast(const Source& source)
 {
   // Compile time assertion: sizeof(Destination) == sizeof(Source)
   // A compile error here means your Destination and Source have different sizes.
@@ -639,7 +640,9 @@ const Bignum::Chunk& Bignum::RawBigit(const int index) const
   return pBigitsBuffer[index];
 }
 
-template<typename S> static int BitSize(const S value)
+template<typename S>
+
+static int BitSize(const S value)
 {
   (void)value; // Mark variable as used.
   return 8 * sizeof(value);
@@ -2147,7 +2150,9 @@ struct OutputBuffer
     size += count;
   }
 
-  template<size_t Size> void Append(const char (&text)[Size])
+  template<size_t Size>
+
+  void Append(const char (&text)[Size])
   {
     Append(text, Size - 1);
   }
@@ -2190,10 +2195,15 @@ struct OutputBuffer
   }
 };
 
-template<bool Pretty, typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, int indent);
-template<typename Buffer> JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer);
-template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString string);
-template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonString string);
+template<bool Pretty, typename Buffer>
+
+static void MarshalJson(const Json& value, Buffer& buffer, int indent);
+template<typename Buffer>
+JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer);
+template<typename Buffer>
+static void WriteJsonString(Buffer& buffer, JsonString string);
+template<typename Buffer>
+static void WriteEscapedString(Buffer& buffer, JsonString string);
 
 static const char EscapeLiteral[EscapeLiteralCount] = {
   9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 2, 9, 4, 3, 9,
@@ -2827,7 +2837,9 @@ static char* LongToString(char* pOutput, long long value)
   return UnsignedLongToString(pOutput, magnitude);
 }
 
-template<typename Buffer> static void WriteLong(Buffer& buffer, long long value)
+template<typename Buffer>
+
+static void WriteLong(Buffer& buffer, long long value)
 {
   char* pOutput = buffer.Reserve(32);
   if (!pOutput)
@@ -2841,7 +2853,8 @@ static void WriteLong(WritableFile& output, long long value) { output.WriteForma
 // WriteDouble
 //  Writes the shortest round-trippable number directly into the output sink.
 ///////////////////////////////////////////////////////
-template<typename Buffer> static void WriteDouble(Buffer& buffer, double value, bool single)
+template<typename Buffer>
+static void WriteDouble(Buffer& buffer, double value, bool single)
 {
   double_conversion::Double inspected(value);
   if (inspected.IsNan()) {
@@ -3088,6 +3101,20 @@ bool Json::Contains(JsonString key) const
   return IsObject() && FindObjectValue(*this, key);
 }
 
+const Json* Json::MemberAt(size_t index, JsonString* pKey) const
+{
+  if (!IsObject() || index >= objectSize)
+    return nullptr;
+
+  const char* pObject = (const char*)this + objectOffset;
+  const ObjectEntry& entry = ObjectEntries(pObject, objectSize)[index];
+  const Json* pName = (const Json*)(pObject + entry.keyOffset);
+  if (pKey)
+    *pKey = pName->GetString();
+
+  return (const Json*)(pObject + entry.valueOffset);
+}
+
 const Json& Json::operator[](JsonString key) const
 {
   JSON_ASSERT(IsObject(), "JSON value is not an object.");
@@ -3114,7 +3141,9 @@ Json::Status Json::ToStringPretty(JsonSpan<char> output) const
 // JSON serialization
 ////////////////////////////////////////////////////////////////////////////////
 
-template<typename Buffer> JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
+template<typename Buffer>
+
+JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
 {
   switch (value.type)
   {
@@ -3178,7 +3207,8 @@ template<typename Buffer> JSON_INLINE static bool MarshalJsonScalar(const Json& 
 // MarshalJson
 //  Serializes an immutable parsed node directly into caller-owned output.
 ///////////////////////////////////////////////////////
-template<bool Pretty, typename Buffer> static void MarshalJson(const Json& value, Buffer& buffer, int indent)
+template<bool Pretty, typename Buffer>
+static void MarshalJson(const Json& value, Buffer& buffer, int indent)
 {
   if (MarshalJsonScalar(value, buffer))
     return;
@@ -3317,7 +3347,9 @@ template<bool Pretty, typename Buffer> static void MarshalJson(const Json& value
   }
 }
 
-template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString string)
+template<typename Buffer>
+
+static void WriteJsonString(Buffer& buffer, JsonString string)
 {
   const char* pData = string.pData;
   size_t size = string.size;
@@ -3342,7 +3374,8 @@ template<typename Buffer> static void WriteJsonString(Buffer& buffer, JsonString
 // WriteEscapedString
 //  Escapes a bounded UTF-8 string into JSON syntax.
 ///////////////////////////////////////////////////////
-template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonString string)
+template<typename Buffer>
+static void WriteEscapedString(Buffer& buffer, JsonString string)
 {
   const char* pData = string.pData;
   size_t size = string.size;
@@ -3415,7 +3448,8 @@ template<typename Buffer> static void WriteEscapedString(Buffer& buffer, JsonStr
 // MarshalValue
 //  Serializes an initializer-list value tree without intermediate storage.
 ///////////////////////////////////////////////////////
-template<bool Pretty, typename Buffer> static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
+template<bool Pretty, typename Buffer>
+static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
 {
   switch (value.type)
   {
@@ -4406,6 +4440,18 @@ Json::Status Json::Parse(const FileMap& input, JsonBuffer* pBuffer)
     return IO_ERROR;
   }
   return Parse((const char*)input.data, input.size, pBuffer);
+}
+
+Json::Status Json::ParseFile(const char* pPath, JsonBuffer* pBuffer)
+{
+  FileMap file(pPath);
+  if (!file.IsValid()) {
+    if (pBuffer)
+      pBuffer->pRoot = nullptr;
+    return IO_ERROR;
+  }
+
+  return Parse((const char*)file.data, file.size, pBuffer);
 }
 
 const char* Json::StatusToString(Status status)
