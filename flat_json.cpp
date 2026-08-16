@@ -4422,37 +4422,6 @@ static Json::Status ParseJson(const char* pData, size_t size, JsonBuffer* pBuffe
 
 Json::Status Json::Parse(const char* pData, size_t size, JsonBuffer* pBuffer) { return ParseJson(pData, size, pBuffer); }
 
-size_t Json::EstimateSize(const FileMap& input)
-{
-  if (!input.IsValid()) {
-    JSON_WARN("Cannot estimate JSON size from an invalid file mapping.\n");
-    return SIZE_MAX;
-  }
-  return EstimateSize((const char*)input.data, input.size);
-}
-
-Json::Status Json::Parse(const FileMap& input, JsonBuffer* pBuffer)
-{
-  if (!input.IsValid()) {
-    if (pBuffer)
-      pBuffer->pRoot = nullptr;
-    JSON_WARN("Cannot parse JSON from an invalid file mapping.\n");
-    return IO_ERROR;
-  }
-  return Parse((const char*)input.data, input.size, pBuffer);
-}
-
-Json::Status Json::ParseFile(const char* pPath, JsonBuffer* pBuffer)
-{
-  FileMap file(pPath);
-  if (!file.IsValid()) {
-    if (pBuffer)
-      pBuffer->pRoot = nullptr;
-    return IO_ERROR;
-  }
-
-  return Parse((const char*)file.data, file.size, pBuffer);
-}
 
 const char* Json::StatusToString(Status status)
 {

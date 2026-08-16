@@ -145,7 +145,6 @@ struct JsonString
 static_assert(std::is_convertible_v<std::span<char>, JsonSpan<char>>);
 static_assert(std::is_convertible_v<std::span<char>, JsonSpan<const char>>);
 
-struct FileMap;
 struct WritableFile;
 struct Json;
 
@@ -161,12 +160,12 @@ struct JsonBuffer
   size_t back = 0;
   const Json* pRoot = nullptr;
 
-  JSON_INLINE const Json* Root() const { return pRoot; }
+  JSON_INLINE const Json* operator->() const { return pRoot; }
+  JSON_INLINE operator const Json*() const { return pRoot; }
 
   JsonBuffer(const JsonBuffer&) = delete;
   JsonBuffer& operator=(const JsonBuffer&) = delete;
 
-protected:
   JsonBuffer(size_t capacity, void* pBuffer) : pData((char*)pBuffer), back(capacity) {}
 };
 
@@ -595,91 +594,18 @@ struct Json
   static const char* StatusToString(Status status);
   static size_t EstimateSize(const char* pData, size_t size);
   static size_t EstimateSize(JsonSpan<const char> data) { return EstimateSize(data.data(), data.size()); }
-  static size_t EstimateSize(const FileMap& input);
 
   template<size_t Size>
   static size_t EstimateSize(const char (&text)[Size]) { return EstimateSize(text, Size - 1); }
 
   static Status Parse(const char* pData, size_t size, JsonBuffer* pBuffer);
   static Status Parse(JsonSpan<const char> data, JsonBuffer* pBuffer) { return Parse(data.data(), data.size(), pBuffer); }
-  static Status Parse(const FileMap& input, JsonBuffer* pBuffer);
-  static Status ParseFile(const char* pPath, JsonBuffer* pBuffer);
 
   template<size_t Size>
   static Status Parse(const char (&text)[Size], JsonBuffer* pBuffer) { return Parse(text, Size - 1, pBuffer); }
 };
 
 static_assert(sizeof(Json) == 16, "Json records must remain 16 bytes for direct array indexing.");
-
-///////////////////////////////////////////////////////
-// FixedJsonDocument
-//  Fixed storage a caller fills, then parses in place; the inline arena owns the
-//  records and `root` points into it, so both live with the scope. On parse failure
-//  (malformed text, or records outgrowing the 4x arena) `root` stays null.
-///////////////////////////////////////////////////////
-template<size_t Capacity>
-struct FixedJsonDocument
-{
-  char buffer[Capacity];
-  FixedJsonBuffer<Capacity * 4> arena;
-  const Json* root = nullptr;
-
-  FixedJsonDocument() = default;
-
-  FixedJsonDocument(const FixedJsonDocument&)            = delete;
-  FixedJsonDocument& operator=(const FixedJsonDocument&) = delete;
-  FixedJsonDocument(FixedJsonDocument&&)                 = delete;
-  FixedJsonDocument& operator=(FixedJsonDocument&&)      = delete;
-
-  bool Parse(size_t length)
-  {
-    root = nullptr;
-    arena.Reset();
-    if (length > Capacity)
-      return false;
-
-    if (Json::Parse(buffer, length, &arena) != Json::SUCCESS)
-      return false;
-
-    root = arena.Root();
-    return root != nullptr;
-  }
-
-  bool IsValid() const { return root != nullptr; }
-};
-
-///////////////////////////////////////////////////////
-// JsonFileMap
-//  RAII parse of a JSON file. File-maps the text, parses it into the inline arena,
-//  and exposes the root value; the mapping is released before the constructor
-//  returns. Panic-free: on a missing file or invalid JSON `root` is null,
-//  IsValid() reports it, and `status` carries the parser verdict.
-///////////////////////////////////////////////////////
-template<size_t Capacity = 16 * 1024>
-struct JsonFileMap
-{
-  FixedJsonBuffer<Capacity> arena;
-  const Json*  root   = nullptr;
-  Json::Status status = Json::MALFORMED;
-
-  explicit JsonFileMap(const char* pPath)
-  {
-    status = Json::ParseFile(pPath, &arena);
-    if (status != Json::SUCCESS)
-      return;
-
-    root = arena.Root();
-  }
-
-  JsonFileMap(const JsonFileMap&)            = delete;
-  JsonFileMap& operator=(const JsonFileMap&) = delete;
-  JsonFileMap(JsonFileMap&&)                 = delete;
-  JsonFileMap& operator=(JsonFileMap&&)      = delete;
-
-  bool IsValid() const { return root != nullptr; }
-};
-
-JsonFileMap(const char*) -> JsonFileMap<16 * 1024>;
 
 ////////////////////////////////////////////////////////////////////////////////
 // JSON write types

@@ -21,7 +21,7 @@ struct FlatJsonBenchmark
   {
     if (flat::Json::Parse(benchmark::JsonText, benchmark::JsonSize, &arena) != flat::Json::SUCCESS)
       return false;
-    pRoot = arena.Root();
+    pRoot = arena.pRoot;
     pArray = &(*pRoot)["array"];
     pObject = &(*pRoot)["object"];
     pInteger = &(*pRoot)["integer"];
@@ -41,7 +41,7 @@ struct FlatJsonBenchmark
     flat::FixedJsonBuffer<16 * 1024> parseArena;
     if (flat::Json::Parse(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena) != flat::Json::SUCCESS)
       return false;
-    const flat::Json* pJson = parseArena.Root();
+    const flat::Json* pJson = parseArena.pRoot;
     return pJson->GetSize() == 3 &&
            benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
            benchmark::ValidateFloatRangeNumbers([&](size_t i) { return (*pJson)[1][i].GetDouble(); });
@@ -54,7 +54,7 @@ struct FlatJsonBenchmark
       flat::FixedJsonBuffer<16 * 1024> parseArena;
       if (flat::Json::Parse(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena) != flat::Json::SUCCESS)
         abort();
-      const flat::Json* pJson = parseArena.Root();
+      const flat::Json* pJson = parseArena.pRoot;
       result += pJson->GetSize();
       benchmark::DoNotOptimize(pJson);
     }
@@ -66,7 +66,7 @@ struct FlatJsonBenchmark
     flat::FixedJsonBuffer<16 * 1024> parseArena;
     if (flat::Json::Parse(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena) != flat::Json::SUCCESS)
       return false;
-    const flat::Json* pJson = parseArena.Root();
+    const flat::Json* pJson = parseArena.pRoot;
     return pJson->GetSize() == 5 &&
            benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
            benchmark::ValidateFloatRangeNumbers([&](size_t i) { return (*pJson)[1][i].GetDouble(); }) &&
@@ -82,7 +82,7 @@ struct FlatJsonBenchmark
       flat::FixedJsonBuffer<16 * 1024> parseArena;
       if (flat::Json::Parse(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena) != flat::Json::SUCCESS)
         abort();
-      const flat::Json* pJson = parseArena.Root();
+      const flat::Json* pJson = parseArena.pRoot;
       result += pJson->GetSize();
       benchmark::DoNotOptimize(pJson);
     }

@@ -37,12 +37,12 @@ validate the input.
 using namespace flat;
 
 constexpr char Text[] = R"({"values":[1,2,3]})";
-FixedJsonBuffer<4096> buffer;
+FixedJsonBuffer<4096> jsonBuffer;
 
-if (Json::EstimateSize(Text) > sizeof(buffer.bytes))
+if (Json::EstimateSize(Text) > sizeof(jsonBuffer.bytes))
     return false;
 
-switch (Json::Parse(Text, &buffer))
+switch (Json::Parse(Text, &jsonBuffer))
 {
     case Json::SUCCESS: break;
     case Json::MALFORMED:
@@ -52,11 +52,11 @@ switch (Json::Parse(Text, &buffer))
     case Json::IO_ERROR: return false;
 }
 
-const Json* pDocument = buffer.Root();
+const Json* pDocument = jsonBuffer.pRoot;
 long long second = (*pDocument)["values"][1].GetLong();
 ```
 
-`Root()` is null until parsing succeeds and is cleared after a failed parse.
+`pRoot` is null until parsing succeeds and is cleared after a failed parse.
 The input text is not retained. The returned pointer remains valid until the
 buffer is reused or destroyed.
 
@@ -183,37 +183,42 @@ for (Json::Member member : root.TryMembers("attributes")) {
 
 `MemberAt(index, &key)` gives indexed access to object members in source order.
 
-### Documents
+### Caller-filled text
 
-`FixedJsonDocument<Capacity>` bundles caller-filled text storage with a 4x
-records arena. Fill `buffer` (a socket read, a request body), then parse in
-place; `root` stays null on failure:
+Text and records both stay in caller-owned storage. A bounded body (a socket
+read, a request payload) parses from a caller array into a caller arena — a 4x
+arena covers any input that fits the text buffer:
 
 ```cpp
-FixedJsonDocument<16 * 1024> document;
-size_t length = ReadBody(document.buffer, sizeof(document.buffer));
+char text[16 * 1024];
+FixedJsonBuffer<64 * 1024> jsonBuffer;
 
-u32 schema = 0;
-if (!document.Parse(length) || !document.root->TryGetU32("schema", &schema))
+size_t length = ReadBody(text, sizeof(text));
+if (Json::Parse(text, length, &jsonBuffer) != Json::SUCCESS)
     return false;
+
+const Json* pJson = jsonBuffer;
 ```
 
-`JsonFileMap` maps, parses, and unmaps a JSON file in its constructor through
-`Json::ParseFile()`; `status` carries the parser verdict, and a missing file is
-a silent `IO_ERROR` so callers can treat it as an ordinary absent-config case:
+A JSON file parses the same way through a temporary read-only mapping, released
+at the end of the statement. `operator->` on a buffer dereferences its root,
+and a buffer converts to its root `const Json*` implicitly:
 
 ```cpp
-JsonFileMap settings("settings.json");
-if (!settings.IsValid())
+FixedJsonBuffer<16 * 1024> jsonBuffer;
+if (Json::Parse(FileMap("settings.json"), &jsonBuffer) != Json::SUCCESS)
     return false;
 
 JsonString theme;
-if (!settings.root->TryGetString("theme", &theme))
+if (!jsonBuffer->TryGetString("theme", &theme))
     return false;
 ```
 
-The default arena is 16 KiB; larger files take an explicit capacity:
-`JsonFileMap<64 * 1024>`.
+`FileMap` converts implicitly to any span constructible from
+`(size_t, const char*)`, so `Parse` takes it through its `JsonSpan<const char>`
+overload — the JSON API itself has no file types. An invalid mapping converts
+to an empty span and parses as `ABSENT_VALUE`; when a missing file is an
+ordinary case, check `FileMap::IsValid()` first and skip the parse.
 
 ## Write JSON
 
@@ -292,7 +297,7 @@ FixedJsonBuffer<4096> parseBuffer;
 switch (Json::Parse(pOutput, strlen(pOutput), &parseBuffer))
 {
     case Json::SUCCESS: {
-        const Json* pJson = parseBuffer.Root();
+        const Json* pJson = parseBuffer.pRoot;
         JsonString model = (*pJson)["model"].GetString();
         JsonString content = (*pJson)["messages"][0]["content"].GetString();
         break;
@@ -405,7 +410,7 @@ switch (Json::Parse(FileMap("request.json"), &parseBuffer))
     case Json::IO_ERROR: return false;
 }
 
-const Json& root = parseBuffer.Root()->GetObject();
+const Json& root = parseBuffer->GetObject();
 JsonString model = root["model"].GetString();
 bool stream = root["stream"].GetBool();
 JsonString content = root["messages"][0]["content"].GetString();
