@@ -27,13 +27,13 @@ struct FlatJsonBenchmark
     pInteger = &(*pRoot)["integer"];
     pFloating = &(*pRoot)["floating"];
     pString = &(*pRoot)["string"];
-    flat::JsonString string = pString->GetString();
+    flat::String string = pString->GetString();
     return (*pArray)[benchmark::ArrayLookupIndex].GetLong() == benchmark::ArrayLookupValue &&
            (*pObject)["target"].GetLong() == benchmark::ObjectLookupValue &&
            pInteger->GetLong() == benchmark::IntegerValue &&
            pFloating->GetDouble() == benchmark::FloatingValue &&
            string.size == benchmark::StringSize &&
-           !memcmp(string.pData, benchmark::StringValue, string.size);
+           !memcmp(string.data, benchmark::StringValue, string.size);
   }
 
   bool ValidateParse32Bit()
@@ -163,10 +163,10 @@ struct FlatJsonBenchmark
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      flat::JsonString value = pString->GetString();
-      benchmark::DoNotOptimize(value.pData);
+      flat::String value = pString->GetString();
+      benchmark::DoNotOptimize(value.data);
       benchmark::DoNotOptimize(value.size);
-      result += benchmark::StringChecksum(value.pData, value.size);
+      result += benchmark::StringChecksum(value.data, value.size);
     }
     return result;
   }

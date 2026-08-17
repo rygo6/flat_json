@@ -109,7 +109,7 @@ serialize_checked(const flat::Json& json, bool pretty, size_t capacity, size_t* 
     memset(pStorage, 0xa5, GuardSize);
     memset(pStorage + GuardSize + capacity, 0xa5, GuardSize);
     char* pOutput = (char*)pStorage + GuardSize;
-    flat::JsonSpan<char> output(capacity, pOutput);
+    flat::Span<char> output(capacity, pOutput);
     flat::Json::Status status = pretty ? json.ToStringPretty(output) : json.ToString(output);
     if (status != flat::Json::SUCCESS)
         abort();

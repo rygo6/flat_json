@@ -111,7 +111,7 @@ root.TryGetFloat("timeout", &timeout);
 | `TryGetU32` | `u32` | `TYPE_LONG` within `[0, UINT32_MAX]` |
 | `TryGetFloat` | `float` | any numeric type, converted |
 | `TryGetDouble` | `double` | any numeric type, converted |
-| `TryGetString` | `JsonString` | string |
+| `TryGetString` | `String` | string |
 | `TryGetArray` | `const Json*` | array |
 | `TryGetObject` | `const Json*` | object |
 
@@ -128,7 +128,7 @@ if (const Json* pItems; root.TryGetArray("items", &pItems) && pItems->GetSize() 
 ### Copy and parse helpers
 
 `TryCopyString` copies a string member into caller memory, NUL-terminated.
-Fixed `char` arrays convert to the `JsonSpan<char>` output automatically. It
+Fixed `char` arrays convert to the `Span<char>` output automatically. It
 returns false when the member is absent, not a string, larger than the output,
 or contains an embedded NUL — a truncated copy never reports success:
 
@@ -176,7 +176,7 @@ for (const Json& entry : root.TryElements("tags")) {
 }
 
 for (Json::Member member : root.TryMembers("attributes")) {
-    JsonString key = member.key;
+    String key = member.key;
     const Json& value = member.value;
 }
 ```
@@ -209,23 +209,22 @@ FixedJsonBuffer<16 * 1024> jsonBuffer;
 if (Json::Parse(FileMap("settings.json"), &jsonBuffer) != Json::SUCCESS)
     return false;
 
-JsonString theme;
+String theme;
 if (!jsonBuffer->TryGetString("theme", &theme))
     return false;
 ```
 
 `FileMap` converts implicitly to any span constructible from
-`(size_t, const char*)`, so `Parse` takes it through its `JsonSpan<const char>`
+`(size_t, const char*)`, so `Parse` takes it through its `Span<const char>`
 overload — the JSON API itself has no file types. An invalid mapping converts
 to an empty span and parses as `ABSENT_VALUE`; when a missing file is an
 ordinary case, check `FileMap::IsValid()` first and skip the parse.
 
 ## Write JSON
 
-Fixed `char` arrays and compatible `std::span` values convert to
-`JsonSpan<char>` automatically. Other memory uses
-`JsonSpan<char>(capacity, pointer)`. Successful memory output is
-NUL-terminated.
+`FixedArray`, fixed C arrays, and compatible `std::span` values convert to
+`Span` automatically. Other memory uses `Span<char>(capacity, pointer)`.
+Successful memory output is NUL-terminated.
 
 Non-integral floating-point output uses roughly 2 KiB of the uncommitted span
 tail as conversion scratch. It can therefore return
@@ -236,7 +235,7 @@ tail as conversion scratch. It can therefore return
 
 using namespace flat;
 
-char pOutput[4096];
+FixedArray<char, 4096> output;
 Json::Status result = WriteJson(
     JsonObject({
         {"model", "gpt-5"},
@@ -248,10 +247,10 @@ Json::Status result = WriteJson(
             }),
         })},
     }),
-    pOutput);
+    output);
 
 if (result == Json::SUCCESS)
-    puts(pOutput);
+    puts(output.data);
 ```
 
 Initializer values are non-owning and must be consumed in the same full
@@ -270,7 +269,7 @@ text size after a successful write.
 ```cpp
 using namespace flat;
 
-char pOutput[4096];
+FixedArray<char, 4096> output;
 Json::Status result = WriteJson(
     JsonObject({
         {"model", "gpt-5"},
@@ -281,7 +280,7 @@ Json::Status result = WriteJson(
             }),
         })},
     }),
-    pOutput);
+    output);
 
 switch (result)
 {
@@ -294,12 +293,12 @@ switch (result)
 }
 
 FixedJsonBuffer<4096> parseBuffer;
-switch (Json::Parse(pOutput, strlen(pOutput), &parseBuffer))
+switch (Json::Parse(output.data, strlen(output.data), &parseBuffer))
 {
     case Json::SUCCESS: {
         const Json* pJson = parseBuffer.pRoot;
-        JsonString model = (*pJson)["model"].GetString();
-        JsonString content = (*pJson)["messages"][0]["content"].GetString();
+        String model = (*pJson)["model"].GetString();
+        String content = (*pJson)["messages"][0]["content"].GetString();
         break;
     }
     case Json::MALFORMED:
@@ -368,16 +367,18 @@ a subtree to less than 4 GiB.
 | `FileMap` | Read-only mapping of an existing file. |
 | `WritableFileMap` | Exact-size writable mapping for fixed binary data, random patches, or shared memory—not JSON streaming. |
 
-`WriteJson()` streams directly through `WritableFile` and flushes before
-returning. The temporary closes at the end of the call. A short write or flush
-failure returns `IO_ERROR`.
+JSON serialization and file output are separate operations: serialize into a
+`Span<char>`, then pass the resulting bytes to `WritableFile::Write()`.
 
 ```cpp
 #include "flat_file.hpp"
 #include "flat_json.hpp"
 
+#include <string.h>
+
 using namespace flat;
 
+FixedArray<char, 4096> output;
 switch (WriteJson(
     JsonObject({
         {"model", "gpt-5"},
@@ -389,7 +390,7 @@ switch (WriteJson(
             }),
         })},
     }),
-    WritableFile("request.json")))
+    output))
 {
     case Json::SUCCESS: break;
     case Json::MALFORMED:
@@ -398,6 +399,11 @@ switch (WriteJson(
     case Json::INSUFFICIENT_SPACE:
     case Json::IO_ERROR: return false;
 }
+
+WritableFile file("request.json");
+if (!file.IsValid() || !file.Write(output.data, strlen(output.data)) ||
+    !file.Flush())
+    return false;
 
 FixedJsonBuffer<64 * 1024> parseBuffer;
 switch (Json::Parse(FileMap("request.json"), &parseBuffer))
@@ -411,9 +417,9 @@ switch (Json::Parse(FileMap("request.json"), &parseBuffer))
 }
 
 const Json& root = parseBuffer->GetObject();
-JsonString model = root["model"].GetString();
+String model = root["model"].GetString();
 bool stream = root["stream"].GetBool();
-JsonString content = root["messages"][0]["content"].GetString();
+String content = root["messages"][0]["content"].GetString();
 ```
 
 The embedded floating-point code emits the shortest round-trippable finite
@@ -423,20 +429,20 @@ write as `1e5000` and `-1e5000`.
 
 ## Benchmarks
 
-Measured 2026-08-11 on macOS 26.5.1 ARM64 with Apple Clang 17.0.0, C++23,
+Measured 2026-08-16 on macOS 26.5.1 ARM64 with Apple Clang 17.0.0, C++23,
 `-O3`, and `-DNDEBUG`. Values are the median of seven samples lasting at least
 25 ms. Lower is better.
 
 | Library | Parse 32-bit only | Parse with 64-bit | Serialize binary to string | Serialize binary to string pretty | Array lookup | Object lookup | Integer access | Floating access | String access |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Flat C++ JSON | 517.9 ns | 1,055.9 ns | 1,192.7 ns | 1,265.7 ns | 0.5 ns | 6.9 ns | 0.5 ns | 0.4 ns | 0.6 ns |
-| jart/json.cpp | 2,143.0 ns | 3,149.4 ns | 2,947.7 ns | 3,978.4 ns | 2.0 ns | 38.5 ns | 0.9 ns | 1.0 ns | 1.0 ns |
-| Mozilla-Ocho/llamafile json.cpp | 1,743.2 ns | 2,551.6 ns | 2,890.1 ns | 3,951.2 ns | 1.8 ns | 36.9 ns | 0.8 ns | 0.8 ns | 0.8 ns |
-| nlohmann::ordered_json | 3,353.9 ns | 5,171.2 ns | 2,971.5 ns | 3,966.7 ns | 1.3 ns | 14.6 ns | 0.4 ns | 0.5 ns | 0.7 ns |
-| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.2 ns | 24.0 ns | 3.5 ns | 12.3 ns | 0.5 ns |
-| chadaustin/sajson | 502.0 ns | N/A | N/A | N/A | 0.5 ns | 9.7 ns | 0.6 ns | 0.5 ns | 0.7 ns |
-| DaveGamble/cJSON | 2,888.4 ns | N/A | 5,990.5 ns | 6,241.7 ns | 25.7 ns | 50.1 ns | 0.5 ns | 0.4 ns | 0.5 ns |
-| zserge/jsmn | N/A | N/A | N/A | N/A | 34.8 ns | 27.9 ns | 3.6 ns | 11.0 ns | 0.6 ns |
+| Flat C++ JSON | 457.1 ns | 1,020.3 ns | 1,157.9 ns | 1,210.5 ns | 0.5 ns | 6.5 ns | 0.5 ns | 0.4 ns | 0.6 ns |
+| jart/json.cpp | 2,018.0 ns | 3,024.7 ns | 2,865.9 ns | 3,843.5 ns | 1.9 ns | 32.7 ns | 0.9 ns | 1.0 ns | 1.0 ns |
+| Mozilla-Ocho/llamafile json.cpp | 1,714.2 ns | 2,454.2 ns | 2,771.4 ns | 3,767.1 ns | 1.7 ns | 33.8 ns | 0.7 ns | 0.7 ns | 0.7 ns |
+| nlohmann::ordered_json | 3,178.5 ns | 4,954.4 ns | 2,854.5 ns | 3,826.3 ns | 1.2 ns | 14.2 ns | 0.4 ns | 0.5 ns | 0.7 ns |
+| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.1 ns | 22.5 ns | 3.4 ns | 11.6 ns | 0.6 ns |
+| chadaustin/sajson | 471.7 ns | N/A | N/A | N/A | 0.5 ns | 9.4 ns | 0.5 ns | 0.6 ns | 0.7 ns |
+| DaveGamble/cJSON | 2,727.0 ns | N/A | 5,777.4 ns | 6,111.9 ns | 22.0 ns | 45.4 ns | 0.5 ns | 0.4 ns | 0.5 ns |
+| zserge/jsmn | N/A | N/A | N/A | N/A | 33.9 ns | 27.2 ns | 3.4 ns | 10.4 ns | 0.6 ns |
 
 The parse columns include only libraries that eagerly produce and validate the
 required numeric values:
@@ -462,8 +468,9 @@ make benchmark
 
 ## Verification
 
-Native tests, benchmarks, ASan, and UBSan were rerun 2026-08-11 on macOS ARM64
-with Apple Clang 17.0.0. x86-64 checks were last run 2026-08-09.
+Native tests, benchmarks, and the fuzz corpus were rerun 2026-08-16 on macOS
+ARM64 with Apple Clang 17.0.0. ASan and UBSan were last run 2026-08-11;
+x86-64 checks were last run 2026-08-09.
 
 | Check | Result |
 | --- | --- |
