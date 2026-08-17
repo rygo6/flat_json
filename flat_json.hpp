@@ -36,12 +36,12 @@
 
 #include <initializer_list>
 #include <limits.h>
-#include <span>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <type_traits>
+
+#include "flat_container.hpp"
 
 #ifndef JSON_INLINE
 #define JSON_INLINE [[gnu::always_inline]] inline
@@ -104,48 +104,6 @@
 namespace flat {
 ////////////////////////////////////////////////////////////////////////////////
 
-using u32 = uint32_t;
-
-template<typename T>
-struct JsonSpan
-{
-  size_t count = 0;
-  T* pData = nullptr;
-
-  constexpr JsonSpan() = default;
-  constexpr JsonSpan(size_t inputCount, T* inputData) : count(inputCount), pData(inputData) {}
-
-  template<typename U, size_t Extent>
-    requires std::is_convertible_v<U(*)[], T(*)[]>
-  constexpr JsonSpan(std::span<U, Extent> value) : count(value.size()), pData(value.data()) {}
-
-  template<typename U, size_t Size>
-    requires std::is_convertible_v<U(*)[], T(*)[]>
-  constexpr JsonSpan(U (&value)[Size]) : count(Size), pData(value) {}
-
-  constexpr T* data() const { return pData; }
-  constexpr size_t size() const { return count; }
-  constexpr bool empty() const { return !count; }
-  constexpr T& operator[](size_t index) const { return pData[index]; }
-};
-
-struct JsonString
-{
-  const char* pData = "";
-  size_t size = 0;
-
-  constexpr JsonString() = default;
-  constexpr JsonString(size_t inputSize, const char* inputData) : pData(inputData), size(inputSize) {}
-  template<size_t Size>
-  constexpr JsonString(const char (&value)[Size]) : pData(value), size(Size - 1) {}
-
-  JSON_INLINE char operator[](size_t index) const { return pData[index]; }
-};
-
-static_assert(std::is_convertible_v<std::span<char>, JsonSpan<char>>);
-static_assert(std::is_convertible_v<std::span<char>, JsonSpan<const char>>);
-
-struct WritableFile;
 struct Json;
 
 ///////////////////////////////////////////////////////
@@ -266,23 +224,23 @@ struct Json
   JSON_INLINE long long GetLong() const { JSON_ASSERT(IsLong(), "JSON value is not a long."); return longValue; }
   JSON_INLINE size_t GetSize() const { JSON_ASSERT(HasSize(), "JSON value has no size."); return IsString() ? stringSize : IsArray() ? arraySize & ArraySizeMask : objectSize; }
 
-  JSON_INLINE JsonString GetString() const { JSON_ASSERT(IsString(), "JSON value is not a string."); return JsonString(stringSize, (const char*)this + stringOffset); }
+  JSON_INLINE String GetString() const { JSON_ASSERT(IsString(), "JSON value is not a string."); return String(stringSize, (const char*)this + stringOffset); }
   JSON_INLINE const Json& GetArray() const { JSON_ASSERT(IsArray(), "JSON value is not an array."); return *this; }
   JSON_INLINE const Json& GetObject() const { JSON_ASSERT(IsObject(), "JSON value is not an object."); return *this; }
 
-  bool Contains(JsonString key) const;
+  bool Contains(String key) const;
   JSON_INLINE bool HasIndex(size_t index) const { return IsArray() && index < (arraySize & ArraySizeMask); }
   JSON_INLINE bool HasIndex(int index) const { return index >= 0 && HasIndex((size_t)index); }
-  JSON_INLINE bool HasKey(JsonString key) const { return Contains(key); }
+  JSON_INLINE bool HasKey(String key) const { return Contains(key); }
   JSON_INLINE bool HasSize() const { return IsString() || IsArray() || IsObject(); }
 
   template<size_t Size>
-  JSON_INLINE bool Contains(const char (&key)[Size]) const { return Contains(JsonString(key)); }
+  JSON_INLINE bool Contains(const char (&key)[Size]) const { return Contains(String(key)); }
   template<size_t Size>
-  JSON_INLINE bool HasKey(const char (&key)[Size]) const { return HasKey(JsonString(key)); }
+  JSON_INLINE bool HasKey(const char (&key)[Size]) const { return HasKey(String(key)); }
 
-  Status ToString(JsonSpan<char> output) const;
-  Status ToStringPretty(JsonSpan<char> output) const;
+  Status ToString(Span<char> output) const;
+  Status ToStringPretty(Span<char> output) const;
 
   JSON_INLINE const Json& operator[](size_t index) const
   {
@@ -292,17 +250,17 @@ struct Json
     size_t physicalIndex = arraySize & ReversedArrayFlag ? size - index - 1 : index;
     return *(const Json*)((const char*)this + arrayOffset + physicalIndex * sizeof(Json));
   }
-  const Json& operator[](JsonString key) const;
+  const Json& operator[](String key) const;
 
   template<size_t Size>
-  JSON_INLINE const Json& operator[](const char (&key)[Size]) const { return (*this)[JsonString(key)]; }
+  JSON_INLINE const Json& operator[](const char (&key)[Size]) const { return (*this)[String(key)]; }
 
   JSON_INLINE const Json& operator[](int index) const { JSON_ASSERT(index >= 0, "JSON index is negative."); return (*this)[(size_t)index]; }
   JSON_INLINE const Json& operator[](u32 index) const { return (*this)[(size_t)index]; }
 
-  JSON_INLINE bool TryCopyString(JsonString key, JsonSpan<char> output) const
+  JSON_INLINE bool TryCopyString(String key, Span<char> output) const
   {
-    if (!output.data() || !output.size())
+    if (!output.data || !output.size)
       return false;
 
     if (!Contains(key))
@@ -312,15 +270,15 @@ struct Json
     if (!value.IsString())
       return false;
 
-    JsonString text = value.GetString();
-    int written = snprintf(output.data(), output.size(), "%.*s", (int)text.size, text.pData);
-    return written >= 0 && (size_t)written == text.size && text.size < output.size();
+    String text = value.GetString();
+    int written = snprintf(output.data, output.size, "%.*s", (int)text.size, text.data);
+    return written >= 0 && (size_t)written == text.size && text.size < output.size;
   }
 
   template<size_t Size>
-  JSON_INLINE bool TryCopyString(const char (&key)[Size], JsonSpan<char> output) const { return TryCopyString(JsonString(key), output); }
+  JSON_INLINE bool TryCopyString(const char (&key)[Size], Span<char> output) const { return TryCopyString(String(key), output); }
 
-  JSON_INLINE bool TryGetLong(JsonString key, long long* pOut) const
+  JSON_INLINE bool TryGetLong(String key, long long* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -333,7 +291,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetU32(JsonString key, u32* pOut) const
+  JSON_INLINE bool TryGetU32(String key, u32* pOut) const
   {
     long long value;
     if (!pOut || !TryGetLong(key, &value) || value < 0 || value > (long long)UINT32_MAX)
@@ -343,7 +301,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetFloat(JsonString key, float* pOut) const
+  JSON_INLINE bool TryGetFloat(String key, float* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -356,7 +314,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetDouble(JsonString key, double* pOut) const
+  JSON_INLINE bool TryGetDouble(String key, double* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -369,7 +327,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetBool(JsonString key, bool* pOut) const
+  JSON_INLINE bool TryGetBool(String key, bool* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -382,7 +340,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetString(JsonString key, JsonString* pOut) const
+  JSON_INLINE bool TryGetString(String key, String* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -395,7 +353,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetArray(JsonString key, const Json** ppOut) const
+  JSON_INLINE bool TryGetArray(String key, const Json** ppOut) const
   {
     if (!ppOut || !Contains(key))
       return false;
@@ -408,7 +366,7 @@ struct Json
     return true;
   }
 
-  JSON_INLINE bool TryGetObject(JsonString key, const Json** ppOut) const
+  JSON_INLINE bool TryGetObject(String key, const Json** ppOut) const
   {
     if (!ppOut || !Contains(key))
       return false;
@@ -422,72 +380,72 @@ struct Json
   }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetLong(const char (&key)[Size], long long* pOut) const { return TryGetLong(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetLong(const char (&key)[Size], long long* pOut) const { return TryGetLong(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetU32(const char (&key)[Size], u32* pOut) const { return TryGetU32(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetU32(const char (&key)[Size], u32* pOut) const { return TryGetU32(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetFloat(const char (&key)[Size], float* pOut) const { return TryGetFloat(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetFloat(const char (&key)[Size], float* pOut) const { return TryGetFloat(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetDouble(const char (&key)[Size], double* pOut) const { return TryGetDouble(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetDouble(const char (&key)[Size], double* pOut) const { return TryGetDouble(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetBool(const char (&key)[Size], bool* pOut) const { return TryGetBool(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetBool(const char (&key)[Size], bool* pOut) const { return TryGetBool(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetString(const char (&key)[Size], JsonString* pOut) const { return TryGetString(JsonString(key), pOut); }
+  JSON_INLINE bool TryGetString(const char (&key)[Size], String* pOut) const { return TryGetString(String(key), pOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetArray(const char (&key)[Size], const Json** ppOut) const { return TryGetArray(JsonString(key), ppOut); }
+  JSON_INLINE bool TryGetArray(const char (&key)[Size], const Json** ppOut) const { return TryGetArray(String(key), ppOut); }
 
   template<size_t Size>
-  JSON_INLINE bool TryGetObject(const char (&key)[Size], const Json** ppOut) const { return TryGetObject(JsonString(key), ppOut); }
+  JSON_INLINE bool TryGetObject(const char (&key)[Size], const Json** ppOut) const { return TryGetObject(String(key), ppOut); }
 
-  JSON_INLINE bool TryCopyFloatArray(JsonString key, JsonSpan<float> output) const
+  JSON_INLINE bool TryCopyFloatArray(String key, Span<float> output) const
   {
     const Json* pArray;
-    if ((output.size() && !output.data()) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size())
+    if ((output.size && !output.data) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size)
       return false;
 
-    for (size_t index = 0; index < output.size(); ++index) {
+    for (size_t index = 0; index < output.size; ++index) {
       if (!(*pArray)[index].IsNumber())
         return false;
     }
 
-    for (size_t index = 0; index < output.size(); ++index)
-      output.data()[index] = (float)(*pArray)[index].GetNumber();
+    for (size_t index = 0; index < output.size; ++index)
+      output.data[index] = (float)(*pArray)[index].GetNumber();
 
     return true;
   }
 
-  JSON_INLINE bool TryCopyDoubleArray(JsonString key, JsonSpan<double> output) const
+  JSON_INLINE bool TryCopyDoubleArray(String key, Span<double> output) const
   {
     const Json* pArray;
-    if ((output.size() && !output.data()) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size())
+    if ((output.size && !output.data) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size)
       return false;
 
-    for (size_t index = 0; index < output.size(); ++index) {
+    for (size_t index = 0; index < output.size; ++index) {
       if (!(*pArray)[index].IsNumber())
         return false;
     }
 
-    for (size_t index = 0; index < output.size(); ++index)
-      output.data()[index] = (*pArray)[index].GetNumber();
+    for (size_t index = 0; index < output.size; ++index)
+      output.data[index] = (*pArray)[index].GetNumber();
 
     return true;
   }
 
   template<size_t Size>
-  JSON_INLINE bool TryCopyFloatArray(const char (&key)[Size], JsonSpan<float> output) const { return TryCopyFloatArray(JsonString(key), output); }
+  JSON_INLINE bool TryCopyFloatArray(const char (&key)[Size], Span<float> output) const { return TryCopyFloatArray(String(key), output); }
 
   template<size_t Size>
-  JSON_INLINE bool TryCopyDoubleArray(const char (&key)[Size], JsonSpan<double> output) const { return TryCopyDoubleArray(JsonString(key), output); }
+  JSON_INLINE bool TryCopyDoubleArray(const char (&key)[Size], Span<double> output) const { return TryCopyDoubleArray(String(key), output); }
 
-  JSON_INLINE bool TryParseHexString(JsonString key, u32* pOut) const
+  JSON_INLINE bool TryParseHexString(String key, u32* pOut) const
   {
-    JsonString text;
+    String text;
     if (!pOut || !TryGetString(key, &text))
       return false;
 
@@ -495,7 +453,7 @@ struct Json
       return false;
 
     char bounded[16] = {};
-    __builtin_memcpy(bounded, text.pData, text.size);
+    __builtin_memcpy(bounded, text.data, text.size);
 
     int base = 10;
     const char* pDigits = bounded;
@@ -519,15 +477,15 @@ struct Json
   }
 
   template<size_t Size>
-  JSON_INLINE bool TryParseHexString(const char (&key)[Size], u32* pOut) const { return TryParseHexString(JsonString(key), pOut); }
+  JSON_INLINE bool TryParseHexString(const char (&key)[Size], u32* pOut) const { return TryParseHexString(String(key), pOut); }
 
   struct Member
   {
-    JsonString key;
+    String key;
     const Json& value;
   };
 
-  const Json* MemberAt(size_t index, JsonString* pKey) const;
+  const Json* MemberAt(size_t index, String* pKey) const;
 
   struct ArrayIterator
   {
@@ -544,7 +502,7 @@ struct Json
     const Json* pJson;
     size_t index;
 
-    JSON_INLINE Member operator*() const { JsonString key; const Json* pValue = pJson->MemberAt(index, &key); return {key, *pValue}; }
+    JSON_INLINE Member operator*() const { String key; const Json* pValue = pJson->MemberAt(index, &key); return {key, *pValue}; }
     JSON_INLINE MemberIterator& operator++() { ++index; return *this; }
     JSON_INLINE bool operator!=(const MemberIterator& other) const { return index != other.index; }
   };
@@ -571,14 +529,14 @@ struct Json
   JSON_INLINE ElementsView TryElements() const { return {IsArray() ? this : nullptr}; }
   JSON_INLINE MembersView TryMembers() const { return {IsObject() ? this : nullptr}; }
 
-  JSON_INLINE ElementsView TryElements(JsonString key) const
+  JSON_INLINE ElementsView TryElements(String key) const
   {
     const Json* pArray = nullptr;
     TryGetArray(key, &pArray);
     return {pArray};
   }
 
-  JSON_INLINE MembersView TryMembers(JsonString key) const
+  JSON_INLINE MembersView TryMembers(String key) const
   {
     const Json* pObject = nullptr;
     TryGetObject(key, &pObject);
@@ -586,20 +544,20 @@ struct Json
   }
 
   template<size_t Size>
-  JSON_INLINE ElementsView TryElements(const char (&key)[Size]) const { return TryElements(JsonString(key)); }
+  JSON_INLINE ElementsView TryElements(const char (&key)[Size]) const { return TryElements(String(key)); }
 
   template<size_t Size>
-  JSON_INLINE MembersView TryMembers(const char (&key)[Size]) const { return TryMembers(JsonString(key)); }
+  JSON_INLINE MembersView TryMembers(const char (&key)[Size]) const { return TryMembers(String(key)); }
 
   static const char* StatusToString(Status status);
   static size_t EstimateSize(const char* pData, size_t size);
-  static size_t EstimateSize(JsonSpan<const char> data) { return EstimateSize(data.data(), data.size()); }
+  static size_t EstimateSize(Span<const char> data) { return EstimateSize(data.data, data.size); }
 
   template<size_t Size>
   static size_t EstimateSize(const char (&text)[Size]) { return EstimateSize(text, Size - 1); }
 
   static Status Parse(const char* pData, size_t size, JsonBuffer* pBuffer);
-  static Status Parse(JsonSpan<const char> data, JsonBuffer* pBuffer) { return Parse(data.data(), data.size(), pBuffer); }
+  static Status Parse(Span<const char> data, JsonBuffer* pBuffer) { return Parse(data.data, data.size, pBuffer); }
 
   template<size_t Size>
   static Status Parse(const char (&text)[Size], JsonBuffer* pBuffer) { return Parse(text, Size - 1, pBuffer); }
@@ -616,12 +574,12 @@ struct JsonMember;
 
 struct JsonArrayValue
 {
-  JsonSpan<const JsonValue> values;
+  Span<const JsonValue> values;
 };
 
 struct JsonObjectValue
 {
-  JsonSpan<const JsonMember> members;
+  Span<const JsonMember> members;
 };
 
 struct JsonValue
@@ -649,7 +607,7 @@ struct JsonValue
     long long longValue;
     float floatValue;
     double doubleValue;
-    JsonString stringValue;
+    String stringValue;
     List listValue;
   };
 
@@ -682,41 +640,33 @@ struct JsonValue
   }
   JsonValue(float value) : type(TYPE_FLOAT), floatValue(value) {}
   JsonValue(double value) : type(TYPE_DOUBLE), doubleValue(value) {}
-  JsonValue(JsonString value) : type(TYPE_STRING), stringValue(value) {}
+  JsonValue(String value) : type(TYPE_STRING), stringValue(value) {}
   template<size_t Size>
   JsonValue(const char (&value)[Size]) : type(TYPE_STRING), stringValue(value) {}
-  JsonValue(JsonArrayValue value) : type(TYPE_ARRAY), listValue{value.values.data(), value.values.size()} {}
+  JsonValue(JsonArrayValue value) : type(TYPE_ARRAY), listValue{value.values.data, value.values.size} {}
   JsonValue(JsonObjectValue value);
 };
 
 struct JsonMember
 {
-  JsonString key;
+  String key;
   JsonValue value;
 
-  JsonMember(JsonString inputKey, JsonValue inputValue) : key(inputKey), value(inputValue) {}
+  JsonMember(String inputKey, JsonValue inputValue) : key(inputKey), value(inputValue) {}
   template<size_t Size>
   JsonMember(const char (&inputKey)[Size], JsonValue inputValue) : key(inputKey), value(inputValue) {}
 };
 
-inline JsonValue::JsonValue(JsonObjectValue value) : type(TYPE_OBJECT), listValue{value.members.data(), value.members.size()} {}
+inline JsonValue::JsonValue(JsonObjectValue value) : type(TYPE_OBJECT), listValue{value.members.data, value.members.size} {}
 
-inline JsonArrayValue JsonArray(std::initializer_list<JsonValue>&& values) { return {JsonSpan<const JsonValue>(values.size(), values.begin())}; }
-inline JsonObjectValue JsonObject(std::initializer_list<JsonMember>&& members) { return {JsonSpan<const JsonMember>(members.size(), members.begin())}; }
+inline JsonArrayValue JsonArray(std::initializer_list<JsonValue>&& values) { return {Span<const JsonValue>((u32)values.size(), values.begin())}; }
+inline JsonObjectValue JsonObject(std::initializer_list<JsonMember>&& members) { return {Span<const JsonMember>((u32)members.size(), members.begin())}; }
 
-Json::Status WriteJson(const JsonValue& value, JsonSpan<char> output);
-Json::Status WriteJsonPretty(const JsonValue& value, JsonSpan<char> output);
-Json::Status WriteJson(const JsonValue& value, WritableFile& output);
-Json::Status WriteJsonPretty(const JsonValue& value, WritableFile& output);
-Json::Status WriteJson(const JsonValue& value, WritableFile&& output);
-Json::Status WriteJsonPretty(const JsonValue& value, WritableFile&& output);
+Json::Status WriteJson(const JsonValue& value, Span<char> output);
+Json::Status WriteJsonPretty(const JsonValue& value, Span<char> output);
 
-Json::Status WriteJson(const Json& value, JsonSpan<char> output);
-Json::Status WriteJsonPretty(const Json& value, JsonSpan<char> output);
-Json::Status WriteJson(const Json& value, WritableFile& output);
-Json::Status WriteJsonPretty(const Json& value, WritableFile& output);
-Json::Status WriteJson(const Json& value, WritableFile&& output);
-Json::Status WriteJsonPretty(const Json& value, WritableFile&& output);
+Json::Status WriteJson(const Json& value, Span<char> output);
+Json::Status WriteJsonPretty(const Json& value, Span<char> output);
 
 ////////////////////////////////////////////////////////////////////////////////
 }  // namespace flat

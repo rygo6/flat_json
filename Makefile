@@ -48,10 +48,10 @@ tests: $(BIN)/tests
 $(BIN) $(OBJ):
 	mkdir -p $@
 
-$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp flat_file.hpp | $(OBJ)
+$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp flat_container.hpp flat_file.hpp | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
 
-$(OBJ)/%.o: tests/%.cpp flat_json.hpp flat_file.hpp | $(OBJ)
+$(OBJ)/%.o: tests/%.cpp flat_json.hpp flat_container.hpp flat_file.hpp | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -I. -c -o $@ $<
 
 $(BIN)/%: $(OBJ)/%.o $(OBJ)/flat_json.o | $(BIN)

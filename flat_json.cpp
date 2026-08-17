@@ -495,7 +495,7 @@ struct Bignum
   void AssignUInt64(uint64_t value);
   void AssignBignum(const Bignum& other);
 
-  void AssignDecimalString(flat::JsonSpan<const char> value);
+  void AssignDecimalString(flat::Span<const char> value);
 
   void AssignPowerUInt16(uint16_t base, const int exponent);
 
@@ -604,7 +604,7 @@ struct Bignum
 //   'v'. If there are two at the same distance, than the number is round up.
 // 'BignumDtoa' expects the given buffer to be big enough to hold all digits
 // and a terminating null-character.
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::JsonSpan<char> buffer, int* pLength, int* pDecimalPoint);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Span<char> buffer, int* pLength, int* pDecimalPoint);
 
 ////////////////////////////////////////////////////////////////////////////////
 // double-conversion/cached-powers.h (amalgamated)
@@ -622,7 +622,7 @@ void GetCachedPowerForDecimalExponent(int requestedExponent, DiyFp* pPower, int*
 ////////////////////////////////////////////////////////////////////////////////
 
 // Converts the parser's already-trimmed arena digit span.
-double StrtodTrimmed(flat::JsonSpan<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
+double StrtodTrimmed(flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
 bool StrtodFast(uint64_t significand, int readDigits, int totalDigits, bool roundUp, int exponent, double* pResult);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -678,7 +678,7 @@ void Bignum::AssignBignum(const Bignum& other)
   usedBigits = other.usedBigits;
 }
 
-static uint64_t ReadUInt64(flat::JsonSpan<const char> buffer, const int from, const int digitsToRead)
+static uint64_t ReadUInt64(flat::Span<const char> buffer, const int from, const int digitsToRead)
 {
   uint64_t result = 0;
   for (int i = from; i < from + digitsToRead; ++i) {
@@ -689,12 +689,12 @@ static uint64_t ReadUInt64(flat::JsonSpan<const char> buffer, const int from, co
   return result;
 }
 
-void Bignum::AssignDecimalString(flat::JsonSpan<const char> value)
+void Bignum::AssignDecimalString(flat::Span<const char> value)
 {
   // 2^64 = 18446744073709551616 > 10^19
   static const int MaxUint64DecimalDigits = 19;
   Zero();
-  int length = (int)value.size();
+  int length = (int)value.size;
   unsigned pos = 0;
   // Let's just say that each digit needs 4 bits.
   while (length >= MaxUint64DecimalDigits) {
@@ -1271,8 +1271,8 @@ static void InitialScaledStartValues(uint64_t significand, int exponent, bool lo
 static void FixupMultiply10(int estimatedPower, bool isEven, int* pDecimalPoint, Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus);
 // Generates digits from the left to the right and stops when the generated
 // digits yield the shortest decimal representation of v.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::JsonSpan<char> buffer, int* pLength);
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::JsonSpan<char> buffer, int* pLength, int* pDecimalPoint)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::Span<char> buffer, int* pLength);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Span<char> buffer, int* pLength, int* pDecimalPoint)
 {
   DOUBLE_CONVERSION_ASSERT(value > 0);
   DOUBLE_CONVERSION_ASSERT(!Double(value).IsSpecial());
@@ -1326,7 +1326,7 @@ void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Json
 // Precondition: 0 <= (pNumerator+pDeltaPlus) / pDenominator < 10.
 //   If 1 <= (pNumerator+pDeltaPlus) / pDenominator < 10 then no leading 0 digit
 //   will be produced. This should be the standard precondition.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::JsonSpan<char> buffer, int* pLength)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::Span<char> buffer, int* pLength)
 {
   // Small optimization: if pDeltaMinus and pDeltaPlus are the same just reuse
   // one of the two bignums.
@@ -1747,11 +1747,11 @@ static const int MaxSignificantDecimalDigits = 780;
 // When the string starts with "1844674407370955161" no further digit is read.
 // Since 2^64 = 18446744073709551616 it would still be possible read another
 // digit if it was less or equal than 6, but this would complicate the code.
-static uint64_t ReadUint64(flat::JsonSpan<const char> buffer, int* pNumberOfReadDigits)
+static uint64_t ReadUint64(flat::Span<const char> buffer, int* pNumberOfReadDigits)
 {
   uint64_t result = 0;
   int i = 0;
-  while (i < (int)buffer.size() && result <= (MaxUint64 / 10 - 1)) {
+  while (i < (int)buffer.size && result <= (MaxUint64 / 10 - 1)) {
     int digit = buffer[i++] - '0';
     DOUBLE_CONVERSION_ASSERT(0 <= digit && digit <= 9);
     result = 10 * result + digit;
@@ -1888,12 +1888,12 @@ static bool DiyFpStrtod(uint64_t significand, int readDigits, int totalDigits, b
   }
 }
 
-static bool DiyFpStrtod(flat::JsonSpan<const char> buffer, int exponent, double* pResult)
+static bool DiyFpStrtod(flat::Span<const char> buffer, int exponent, double* pResult)
 {
   int readDigits;
   uint64_t significand = ReadUint64(buffer, &readDigits);
-  bool roundUp = readDigits < (int)buffer.size() && buffer[readDigits] >= '5';
-  return DiyFpStrtod(significand, readDigits, (int)buffer.size(), roundUp, exponent, pResult);
+  bool roundUp = readDigits < (int)buffer.size && buffer[readDigits] >= '5';
+  return DiyFpStrtod(significand, readDigits, (int)buffer.size, roundUp, exponent, pResult);
 }
 
 // Returns
@@ -1904,11 +1904,11 @@ static bool DiyFpStrtod(flat::JsonSpan<const char> buffer, int exponent, double*
 //   buffer.length() + exponent <= MaxDecimalPower + 1
 //   buffer.length() + exponent > MinDecimalPower
 //   buffer.length() <= MaxDecimalSignificantDigits
-static int CompareBufferWithDiyFp(flat::JsonSpan<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
+static int CompareBufferWithDiyFp(flat::Span<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
 {
-  DOUBLE_CONVERSION_ASSERT((int)buffer.size() + exponent <= MaxDecimalPower + 1);
-  DOUBLE_CONVERSION_ASSERT((int)buffer.size() + exponent > MinDecimalPower);
-  DOUBLE_CONVERSION_ASSERT((int)buffer.size() <= MaxSignificantDecimalDigits);
+  DOUBLE_CONVERSION_ASSERT((int)buffer.size + exponent <= MaxDecimalPower + 1);
+  DOUBLE_CONVERSION_ASSERT((int)buffer.size + exponent > MinDecimalPower);
+  DOUBLE_CONVERSION_ASSERT((int)buffer.size <= MaxSignificantDecimalDigits);
   // Make sure that the Bignum will be able to hold all our numbers.
   // Our Bignum implementation has a separate field for exponents. Shifts will
   // consume at most one bigit (< 64 bits).
@@ -1933,17 +1933,17 @@ static int CompareBufferWithDiyFp(flat::JsonSpan<const char> buffer, int exponen
 
 // Returns true if the guess is the correct double.
 // Returns false, when guess is either correct or the next-lower double.
-static bool ComputeGuess(flat::JsonSpan<const char> trimmed, int exponent, double* pGuess)
+static bool ComputeGuess(flat::Span<const char> trimmed, int exponent, double* pGuess)
 {
-  if (trimmed.empty()) {
+  if (trimmed.IsEmpty()) {
     *pGuess = 0.0;
     return true;
   }
-  if (exponent + (int)trimmed.size() - 1 >= MaxDecimalPower) {
+  if (exponent + (int)trimmed.size - 1 >= MaxDecimalPower) {
     *pGuess = Double::Infinity();
     return true;
   }
-  if (exponent + (int)trimmed.size() <= MinDecimalPower) {
+  if (exponent + (int)trimmed.size <= MinDecimalPower) {
     *pGuess = 0.0;
     return true;
   }
@@ -1983,19 +1983,19 @@ static bool IsNonZeroDigit(const char digit) { return ('1' <= digit) && (digit <
 [[maybe_unused]]
 #endif
 #endif
-static bool AssertTrimmedDigits(flat::JsonSpan<const char> buffer)
+static bool AssertTrimmedDigits(flat::Span<const char> buffer)
 {
-  for (int i = 0; i < (int)buffer.size(); ++i) {
+  for (int i = 0; i < (int)buffer.size; ++i) {
     if (!IsDigit(buffer[i])) {
       return false;
     }
   }
-  return buffer.empty() || (IsNonZeroDigit(buffer[0]) && IsNonZeroDigit(buffer[buffer.size() - 1]));
+  return buffer.IsEmpty() || (IsNonZeroDigit(buffer[0]) && IsNonZeroDigit(buffer[buffer.size - 1]));
 }
 
-double StrtodTrimmed(flat::JsonSpan<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
+double StrtodTrimmed(flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
 {
-  DOUBLE_CONVERSION_ASSERT((int)trimmed.size() <= MaxSignificantDecimalDigits);
+  DOUBLE_CONVERSION_ASSERT((int)trimmed.size <= MaxSignificantDecimalDigits);
   DOUBLE_CONVERSION_ASSERT(AssertTrimmedDigits(trimmed));
   double guess;
   const bool isCorrect = ComputeGuess(trimmed, exponent, &guess);
@@ -2114,7 +2114,7 @@ struct OutputBuffer
   size_t capacity = 0;
   Json::Status status = Json::SUCCESS;
 
-  explicit OutputBuffer(JsonSpan<char> output) : pData(output.data()), capacity(output.size())
+  explicit OutputBuffer(Span<char> output) : pData(output.data), capacity(output.size)
   {
     if (!pData && capacity) {
       JSON_WARN("JSON output cannot be null when its capacity is nonzero.\n");
@@ -2150,12 +2150,7 @@ struct OutputBuffer
     size += count;
   }
 
-  template<size_t Size>
-
-  void Append(const char (&text)[Size])
-  {
-    Append(text, Size - 1);
-  }
+  void Append(String string) { Append(string.data, string.size); }
 
   void AppendQuoted(const char* pSource, size_t count)
   {
@@ -2195,15 +2190,10 @@ struct OutputBuffer
   }
 };
 
-template<bool Pretty, typename Buffer>
-
-static void MarshalJson(const Json& value, Buffer& buffer, int indent);
-template<typename Buffer>
-JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer);
-template<typename Buffer>
-static void WriteJsonString(Buffer& buffer, JsonString string);
-template<typename Buffer>
-static void WriteEscapedString(Buffer& buffer, JsonString string);
+static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent);
+JSON_INLINE static bool MarshalJsonScalar(const Json& value, OutputBuffer& buffer);
+static void WriteString(OutputBuffer& buffer, String string);
+static void WriteEscapedString(OutputBuffer& buffer, String string);
 
 static const char EscapeLiteral[EscapeLiteralCount] = {
   9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 2, 9, 4, 3, 9,
@@ -2804,7 +2794,7 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
       JSON_WARN("JSON parse buffer has no room for exact number conversion.\n");
       return INSUFFICIENT_SPACE;
     }
-    converted = double_conversion::StrtodTrimmed(JsonSpan<const char>(digitPosition, pDigits), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
+    converted = double_conversion::StrtodTrimmed(Span<const char>(digitPosition, pDigits), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
   }
   *ppOutputEnd = pCursor;
   *pOutputValue = negative ? -converted : converted;
@@ -2837,9 +2827,7 @@ static char* LongToString(char* pOutput, long long value)
   return UnsignedLongToString(pOutput, magnitude);
 }
 
-template<typename Buffer>
-
-static void WriteLong(Buffer& buffer, long long value)
+static void WriteLong(OutputBuffer& buffer, long long value)
 {
   char* pOutput = buffer.Reserve(32);
   if (!pOutput)
@@ -2847,14 +2835,11 @@ static void WriteLong(Buffer& buffer, long long value)
   buffer.Commit(LongToString(pOutput, value) - pOutput);
 }
 
-static void WriteLong(WritableFile& output, long long value) { output.WriteFormat("%lld", value); }
-
 ///////////////////////////////////////////////////////
 // WriteDouble
 //  Writes the shortest round-trippable number directly into the output sink.
 ///////////////////////////////////////////////////////
-template<typename Buffer>
-static void WriteDouble(Buffer& buffer, double value, bool single)
+static void WriteDouble(OutputBuffer& buffer, double value, bool single)
 {
   double_conversion::Double inspected(value);
   if (inspected.IsNan()) {
@@ -2890,7 +2875,7 @@ static void WriteDouble(Buffer& buffer, double value, bool single)
     length = 1;
     point = 1;
   } else {
-    JsonSpan<char> digits(18, pOutput);
+    Span<char> digits(18, pOutput);
     uintptr_t workspaceAddress = ((uintptr_t)(pOutput + 32) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
     size_t workspaceSize = 4 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
     if (!buffer.Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize))
@@ -2937,89 +2922,11 @@ static void WriteDouble(Buffer& buffer, double value, bool single)
   buffer.Commit(length);
 }
 
-static void WriteExponent(WritableFile& output, unsigned int magnitude)
-{
-  if (magnitude >= 100)
-    output.Add(magnitude / 100 + '0');
-  if (magnitude >= 10)
-    output.Add((magnitude / 10) % 10 + '0');
-  output.Add(magnitude % 10 + '0');
-}
-
-static void WriteDouble(WritableFile& output, double value, bool single)
-{
-  double_conversion::Double inspected(value);
-  if (inspected.IsNan()) {
-    output.Append("null");
-    return;
-  }
-  if (inspected.IsInfinite()) {
-    if (value < 0)
-      output.Add('-');
-    output.Append("1e5000");
-    return;
-  }
-  if (-0x1p63 <= value && value < 0x1p63) {
-    long long integer = (long long)value;
-    if ((double)integer == value) {
-      WriteLong(output, integer);
-      return;
-    }
-  }
-
-  bool negative = inspected.Sign() < 0;
-  if (negative)
-    value = -value;
-
-  char digits[18];
-  int length;
-  int point;
-  if (value == 0) {
-    digits[0] = '0';
-    length = 1;
-    point = 1;
-  } else {
-    double_conversion::Bignum::Chunk workspace[4 * double_conversion::Bignum::BigitCapacity];
-    double_conversion::BignumDtoa(value, single, workspace, JsonSpan<char>(sizeof(digits), digits), &length, &point);
-  }
-
-  if (negative && value != 0.0)
-    output.Add('-');
-
-  int exponent = point - 1;
-  if (-6 <= exponent && exponent < 21) {
-    if (point <= 0) {
-      output.Append("0.");
-      for (int i = point; i < 0; ++i)
-        output.Add('0');
-      output.Append(digits, length);
-    } else if (point >= length) {
-      output.Append(digits, length);
-      for (int i = length; i < point; ++i)
-        output.Add('0');
-    } else {
-      output.Append(digits, point);
-      output.Add('.');
-      output.Append(digits + point, length - point);
-    }
-    return;
-  }
-
-  output.Add(digits[0]);
-  if (length > 1) {
-    output.Add('.');
-    output.Append(digits + 1, length - 1);
-  }
-  output.Add('e');
-  output.Add(exponent < 0 ? '-' : '+');
-  WriteExponent(output, exponent < 0 ? -exponent : exponent);
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable value access
 ////////////////////////////////////////////////////////////////////////////////
 
-JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString key)
+JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
 {
   const char* pObject = (const char*)&object + object.objectOffset;
   const u32* pKeySizes = ObjectKeySizes(pObject);
@@ -3041,7 +2948,7 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
             continue;
           const ObjectEntry& entry = pEntries[j];
           const Json* pName = (const Json*)(pObject + entry.keyOffset);
-          if (!memcmp(pName->GetString().pData, key.pData, key.size))
+          if (!memcmp(pName->GetString().data, key.data, key.size))
             return (const Json*)(pObject + entry.valueOffset);
         }
       }
@@ -3051,7 +2958,7 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
         continue;
       const ObjectEntry& entry = pEntries[i];
       const Json* pName = (const Json*)(pObject + entry.keyOffset);
-      if (!memcmp(pName->GetString().pData, key.pData, key.size))
+      if (!memcmp(pName->GetString().data, key.data, key.size))
         return (const Json*)(pObject + entry.valueOffset);
     }
     return nullptr;
@@ -3074,7 +2981,7 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
     }
     const ObjectEntry& entry = pEntries[entryIndex];
     const Json* pName = (const Json*)(pObject + entry.keyOffset);
-    int order = memcmp(pName->GetString().pData, key.pData, key.size);
+    int order = memcmp(pName->GetString().data, key.data, key.size);
     if (order < 0)
       first = middle + 1;
     else
@@ -3087,7 +2994,7 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
     return nullptr;
   const ObjectEntry& entry = pEntries[entryIndex];
   const Json* pName = (const Json*)(pObject + entry.keyOffset);
-  if (memcmp(pName->GetString().pData, key.pData, key.size))
+  if (memcmp(pName->GetString().data, key.data, key.size))
     return nullptr;
   return (const Json*)(pObject + entry.valueOffset);
 }
@@ -3096,12 +3003,12 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, JsonString ke
 // Json::Contains
 //  Finds an object key through its immutable size scan or sorted index.
 ///////////////////////////////////////////////////////
-bool Json::Contains(JsonString key) const
+bool Json::Contains(String key) const
 {
   return IsObject() && FindObjectValue(*this, key);
 }
 
-const Json* Json::MemberAt(size_t index, JsonString* pKey) const
+const Json* Json::MemberAt(size_t index, String* pKey) const
 {
   if (!IsObject() || index >= objectSize)
     return nullptr;
@@ -3115,7 +3022,7 @@ const Json* Json::MemberAt(size_t index, JsonString* pKey) const
   return (const Json*)(pObject + entry.valueOffset);
 }
 
-const Json& Json::operator[](JsonString key) const
+const Json& Json::operator[](String key) const
 {
   JSON_ASSERT(IsObject(), "JSON value is not an object.");
   const Json* pValue = FindObjectValue(*this, key);
@@ -3123,17 +3030,17 @@ const Json& Json::operator[](JsonString key) const
   return *pValue;
 }
 
-Json::Status Json::ToString(JsonSpan<char> output) const
+Json::Status Json::ToString(Span<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson<false>(*this, buffer, 0);
+  MarshalJson(*this, buffer, false, 0);
   return buffer.Finish();
 }
 
-Json::Status Json::ToStringPretty(JsonSpan<char> output) const
+Json::Status Json::ToStringPretty(Span<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson<true>(*this, buffer, 0);
+  MarshalJson(*this, buffer, true, 0);
   return buffer.Finish();
 }
 
@@ -3141,9 +3048,7 @@ Json::Status Json::ToStringPretty(JsonSpan<char> output) const
 // JSON serialization
 ////////////////////////////////////////////////////////////////////////////////
 
-template<typename Buffer>
-
-JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
+JSON_INLINE static bool MarshalJsonScalar(const Json& value, OutputBuffer& buffer)
 {
   switch (value.type)
   {
@@ -3151,41 +3056,39 @@ JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
       buffer.Append("null");
       return true;
     case Json::TYPE_STRING:
-      WriteJsonString(buffer, value.GetString());
+      WriteString(buffer, value.GetString());
       return true;
     case Json::TYPE_PLAIN_STRING:
-      buffer.AppendQuoted(value.GetString().pData, value.stringSize);
+      buffer.AppendQuoted(value.GetString().data, value.stringSize);
       return true;
     case Json::TYPE_BOOL:
       if (value.boolValue) buffer.Append("true");
       else                 buffer.Append("false");
       return true;
     case Json::TYPE_LONG:
-      if constexpr (requires { buffer.Reserve(2); buffer.Commit(2); }) {
-        if (0 <= value.longValue && value.longValue < 100) {
-          char* pOutput = buffer.Reserve(2);
-          if (!pOutput)
-            return true;
-          if (value.longValue < 10) {
-            pOutput[0] = value.longValue + '0';
-            buffer.Commit(1);
-          } else {
-            pOutput[0] = value.longValue / 10 + '0';
-            pOutput[1] = value.longValue % 10 + '0';
-            buffer.Commit(2);
-          }
+      if (0 <= value.longValue && value.longValue < 100) {
+        char* pOutput = buffer.Reserve(2);
+        if (!pOutput)
           return true;
+        if (value.longValue < 10) {
+          pOutput[0] = value.longValue + '0';
+          buffer.Commit(1);
+        } else {
+          pOutput[0] = value.longValue / 10 + '0';
+          pOutput[1] = value.longValue % 10 + '0';
+          buffer.Commit(2);
         }
-        if (0 <= value.longValue && value.longValue < 1000) {
-          char* pOutput = buffer.Reserve(3);
-          if (!pOutput)
-            return true;
-          pOutput[0] = value.longValue / 100 + '0';
-          pOutput[1] = value.longValue / 10 % 10 + '0';
-          pOutput[2] = value.longValue % 10 + '0';
-          buffer.Commit(3);
+        return true;
+      }
+      if (0 <= value.longValue && value.longValue < 1000) {
+        char* pOutput = buffer.Reserve(3);
+        if (!pOutput)
           return true;
-        }
+        pOutput[0] = value.longValue / 100 + '0';
+        pOutput[1] = value.longValue / 10 % 10 + '0';
+        pOutput[2] = value.longValue % 10 + '0';
+        buffer.Commit(3);
+        return true;
       }
       WriteLong(buffer, value.longValue);
       return true;
@@ -3207,8 +3110,7 @@ JSON_INLINE static bool MarshalJsonScalar(const Json& value, Buffer& buffer)
 // MarshalJson
 //  Serializes an immutable parsed node directly into caller-owned output.
 ///////////////////////////////////////////////////////
-template<bool Pretty, typename Buffer>
-static void MarshalJson(const Json& value, Buffer& buffer, int indent)
+static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent)
 {
   if (MarshalJsonScalar(value, buffer))
     return;
@@ -3219,7 +3121,7 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
       u32 size = value.arraySize & Json::ArraySizeMask;
       for (u32 i = 0; i < size; ++i) {
         const Json& child = value[(size_t)i];
-        if constexpr (!Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+        if (!pretty) {
           if (i && child.type == Json::TYPE_LONG && 0 <= child.longValue && child.longValue < 1000) {
             size_t digits = child.longValue < 10 ? 1 : child.longValue < 100 ? 2 : 3;
             char* pOutput = buffer.Reserve(digits + 1);
@@ -3241,13 +3143,13 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
           }
         }
         if (i) {
-          if constexpr (Pretty)
+          if (pretty)
             buffer.Append(", ");
           else
             buffer.Add(',');
         }
         if (!MarshalJsonScalar(child, buffer))
-          MarshalJson<Pretty>(child, buffer, indent);
+          MarshalJson(child, buffer, pretty, indent);
       }
       buffer.Add(']');
       break;
@@ -3260,9 +3162,9 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
         const ObjectEntry& entry = pEntries[i];
         const Json* pName = (const Json*)(pObject + entry.keyOffset);
         bool wroteHeader = false;
-        if constexpr (!Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+        if (!pretty) {
           if (pName->type == Json::TYPE_PLAIN_STRING) {
-            JsonString name = pName->GetString();
+            String name = pName->GetString();
             size_t count = (i ? 1 : 0) + name.size + 3;
             char* pOutput = buffer.Reserve(count);
             if (!pOutput)
@@ -3271,7 +3173,7 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
             if (i)
               *pCursor++ = ',';
             *pCursor++ = '"';
-            memcpy(pCursor, name.pData, name.size);
+            memcpy(pCursor, name.data, name.size);
             pCursor += name.size;
             *pCursor++ = '"';
             *pCursor++ = ':';
@@ -3281,7 +3183,7 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
           }
         }
         if (!wroteHeader) {
-          if constexpr (Pretty) {
+          if (pretty) {
             if (value.objectSize > 1) {
               if (i)
                 buffer.Append(",\n");
@@ -3298,14 +3200,14 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
               buffer.Add(',');
           }
           bool wroteName = false;
-          if constexpr (Pretty && requires { buffer.Reserve(4); buffer.Commit(4); }) {
+          if (pretty) {
             if (pName->type == Json::TYPE_PLAIN_STRING) {
-              JsonString name = pName->GetString();
+              String name = pName->GetString();
               char* pOutput = buffer.Reserve(name.size + 4);
               if (!pOutput)
                 return;
               pOutput[0] = '"';
-              memcpy(pOutput + 1, name.pData, name.size);
+              memcpy(pOutput + 1, name.data, name.size);
               pOutput[name.size + 1] = '"';
               pOutput[name.size + 2] = ':';
               pOutput[name.size + 3] = ' ';
@@ -3315,23 +3217,23 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
           }
           if (!wroteName) {
             if (pName->type == Json::TYPE_PLAIN_STRING)
-              buffer.AppendQuoted(pName->GetString().pData, pName->stringSize);
+              buffer.AppendQuoted(pName->GetString().data, pName->stringSize);
             else
-              WriteJsonString(buffer, pName->GetString());
+              WriteString(buffer, pName->GetString());
             buffer.Add(':');
-            if constexpr (Pretty)
+            if (pretty)
               buffer.Add(' ');
           }
         }
         const Json& child = *(const Json*)(pObject + entry.valueOffset);
         if (!MarshalJsonScalar(child, buffer))
-          MarshalJson<Pretty>(child, buffer, indent);
-        if constexpr (Pretty) {
+          MarshalJson(child, buffer, pretty, indent);
+        if (pretty) {
           if (value.objectSize > 1)
             --indent;
         }
       }
-      if constexpr (Pretty) {
+      if (pretty) {
         if (value.objectSize > 1) {
           buffer.Add('\n');
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
@@ -3347,11 +3249,9 @@ static void MarshalJson(const Json& value, Buffer& buffer, int indent)
   }
 }
 
-template<typename Buffer>
-
-static void WriteJsonString(Buffer& buffer, JsonString string)
+static void WriteString(OutputBuffer& buffer, String string)
 {
-  const char* pData = string.pData;
+  const char* pData = string.data;
   size_t size = string.size;
   size_t plainSize = 0;
   while (plainSize < size) {
@@ -3374,10 +3274,9 @@ static void WriteJsonString(Buffer& buffer, JsonString string)
 // WriteEscapedString
 //  Escapes a bounded UTF-8 string into JSON syntax.
 ///////////////////////////////////////////////////////
-template<typename Buffer>
-static void WriteEscapedString(Buffer& buffer, JsonString string)
+static void WriteEscapedString(OutputBuffer& buffer, String string)
 {
-  const char* pData = string.pData;
+  const char* pData = string.data;
   size_t size = string.size;
   for (size_t offset = 0; offset < size;) {
     wint_t codePoint = pData[offset++] & 255;
@@ -3448,8 +3347,7 @@ static void WriteEscapedString(Buffer& buffer, JsonString string)
 // MarshalValue
 //  Serializes an initializer-list value tree without intermediate storage.
 ///////////////////////////////////////////////////////
-template<bool Pretty, typename Buffer>
-static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
+static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pretty, int indent)
 {
   switch (value.type)
   {
@@ -3472,7 +3370,7 @@ static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
       WriteDouble(buffer, value.doubleValue, false);
       break;
     case JsonValue::TYPE_STRING:
-      WriteJsonString(buffer, value.stringValue);
+      WriteString(buffer, value.stringValue);
       break;
     case JsonValue::TYPE_ARRAY: {
       const JsonValue* pValues = (const JsonValue*)value.listValue.pData;
@@ -3480,10 +3378,10 @@ static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
       for (size_t i = 0; i < value.listValue.size; ++i) {
         if (i) {
           buffer.Add(',');
-          if constexpr (Pretty)
+          if (pretty)
             buffer.Add(' ');
         }
-        MarshalValue<Pretty>(pValues[i], buffer, indent);
+        MarshalValue(pValues[i], buffer, pretty, indent);
       }
       buffer.Add(']');
       break;
@@ -3495,20 +3393,20 @@ static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
       for (size_t i = 0; i < count; ++i) {
         if (i)
           buffer.Add(',');
-        if constexpr (Pretty) {
+        if (pretty) {
           if (count > 1) {
             buffer.Add('\n');
             for (int indentationIndex = 0; indentationIndex < indent + 1; ++indentationIndex)
               buffer.Append("  ");
           }
         }
-        WriteJsonString(buffer, pMembers[i].key);
+        WriteString(buffer, pMembers[i].key);
         buffer.Add(':');
-        if constexpr (Pretty)
+        if (pretty)
           buffer.Add(' ');
-        MarshalValue<Pretty>(pMembers[i].value, buffer, indent + 1);
+        MarshalValue(pMembers[i].value, buffer, pretty, indent + 1);
       }
-      if constexpr (Pretty) {
+      if (pretty) {
         if (count > 1) {
           buffer.Add('\n');
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
@@ -3523,71 +3421,23 @@ static void MarshalValue(const JsonValue& value, Buffer& buffer, int indent)
   }
 }
 
-Json::Status WriteJson(const JsonValue& value, JsonSpan<char> output)
+Json::Status WriteJson(const JsonValue& value, Span<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue<false>(value, buffer, 0);
+  MarshalValue(value, buffer, false, 0);
   return buffer.Finish();
 }
 
-Json::Status WriteJsonPretty(const JsonValue& value, JsonSpan<char> output)
+Json::Status WriteJsonPretty(const JsonValue& value, Span<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue<true>(value, buffer, 0);
+  MarshalValue(value, buffer, true, 0);
   return buffer.Finish();
 }
 
-Json::Status WriteJson(const Json& value, JsonSpan<char> output) { return value.ToString(output); }
+Json::Status WriteJson(const Json& value, Span<char> output) { return value.ToString(output); }
 
-Json::Status WriteJsonPretty(const Json& value, JsonSpan<char> output) { return value.ToStringPretty(output); }
-
-Json::Status WriteJson(const JsonValue& value, WritableFile& output)
-{
-  if (!output.IsValid()) {
-    JSON_WARN("Cannot write JSON to an invalid file.\n");
-    return Json::IO_ERROR;
-  }
-  MarshalValue<false>(value, output, 0);
-  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
-}
-
-Json::Status WriteJsonPretty(const JsonValue& value, WritableFile& output)
-{
-  if (!output.IsValid()) {
-    JSON_WARN("Cannot write JSON to an invalid file.\n");
-    return Json::IO_ERROR;
-  }
-  MarshalValue<true>(value, output, 0);
-  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
-}
-
-Json::Status WriteJson(const Json& value, WritableFile& output)
-{
-  if (!output.IsValid()) {
-    JSON_WARN("Cannot write JSON to an invalid file.\n");
-    return Json::IO_ERROR;
-  }
-  MarshalJson<false>(value, output, 0);
-  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
-}
-
-Json::Status WriteJsonPretty(const Json& value, WritableFile& output)
-{
-  if (!output.IsValid()) {
-    JSON_WARN("Cannot write JSON to an invalid file.\n");
-    return Json::IO_ERROR;
-  }
-  MarshalJson<true>(value, output, 0);
-  return output.Flush() ? Json::SUCCESS : Json::IO_ERROR;
-}
-
-Json::Status WriteJson(const JsonValue& value, WritableFile&& output) { return WriteJson(value, output); }
-
-Json::Status WriteJsonPretty(const JsonValue& value, WritableFile&& output) { return WriteJsonPretty(value, output); }
-
-Json::Status WriteJson(const Json& value, WritableFile&& output) { return WriteJson(value, output); }
-
-Json::Status WriteJsonPretty(const Json& value, WritableFile&& output) { return WriteJsonPretty(value, output); }
+Json::Status WriteJsonPretty(const Json& value, Span<char> output) { return value.ToStringPretty(output); }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable backward parser
@@ -4155,7 +4005,7 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
                   return pKeySizes[left] < pKeySizes[right];
                 const Json* pLeft = (const Json*)(pIndex + pEntries[left].keyOffset);
                 const Json* pRight = (const Json*)(pIndex + pEntries[right].keyOffset);
-                int order = memcmp(pLeft->GetString().pData, pRight->GetString().pData, pKeySizes[left]);
+                int order = memcmp(pLeft->GetString().data, pRight->GetString().data, pKeySizes[left]);
                 return order ? order < 0 : left < right;
               });
             }
