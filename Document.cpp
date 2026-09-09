@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////////////
 // @author: rygo6
-// flat_json.cpp — Flat, caller-owned arena JSON parsing and serialization.
+// Document.cpp - Flat, caller-owned arena JSON parsing and serialization.
 ////////////////////////////////////////////////////////////////////////////////
 
 // Copyright 2024 Mozilla Foundation
@@ -26,18 +26,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "flat_json.hpp"
-#include "flat_file.hpp"
-
-#include <algorithm>
 #include <type_traits>
-
-#include <ctype.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "Document.hpp"
+
+#include <algorithm>
+
+#include <ctype.h>
 #include <wchar.h>
 
 #if !defined(__x86_64__) && !defined(_M_X64) && !defined(__aarch64__) && !defined(_M_ARM64)
@@ -96,11 +95,12 @@ static_assert(sizeof(void*) == 8, "flat json requires a 64-bit target");
 // double-conversion/utils.h (amalgamated)
 ////////////////////////////////////////////////////////////////////////////////
 
-#define DOUBLE_CONVERSION_ASSERT(condition) JSON_REQUIRE(condition, #condition)
-#define DOUBLE_CONVERSION_UNREACHABLE() JSON_PANIC("Unreachable double-conversion path.")
+#define DOUBLE_CONVERSION_ASSERT(condition) DOC_REQUIRE(condition, #condition)
+#define DOUBLE_CONVERSION_UNREACHABLE() DOC_PANIC("Unreachable double-conversion path.")
 
 // Keep upstream's split spelling for its 64-bit constants.
 #define DOUBLE_CONVERSION_UINT64_2PART_C(a, b) (((static_cast<uint64_t>(a) << 32) + 0x##b##u))
+
 
 ////////////////////////////////////////////////////////////////////////////////
 namespace double_conversion {
@@ -187,23 +187,11 @@ struct DiyFp
     exponentValue = exponent;
   }
 
-  uint64_t Significand() const
-  {
-    return significandValue;
-  }
-  int32_t Exponent() const
-  {
-    return exponentValue;
-  }
+  uint64_t Significand() const { return significandValue; }
+  int32_t Exponent() const { return exponentValue; }
 
-  void SetSignificand(uint64_t newValue)
-  {
-    significandValue = newValue;
-  }
-  void SetExponent(int32_t newValue)
-  {
-    exponentValue = newValue;
-  }
+  void SetSignificand(uint64_t newValue) { significandValue = newValue; }
+  void SetExponent(int32_t newValue) { exponentValue = newValue; }
 
   static const uint64_t Uint64MSB = DOUBLE_CONVERSION_UINT64_2PART_C(0x80000000, 00000000);
 
@@ -243,10 +231,7 @@ struct Double
   }
 
   // Returns the double's bit as uint64.
-  uint64_t AsUint64() const
-  {
-    return bits;
-  }
+  uint64_t AsUint64() const { return bits; }
 
   // Returns the next greater double. Returns +infinity on input +infinity.
   double NextDouble() const
@@ -361,10 +346,7 @@ struct Double
     return order - DenormalExponent;
   }
 
-  static double Infinity()
-  {
-    return Double(InfinityBits).Value();
-  }
+  static double Infinity() { return Double(InfinityBits).Value(); }
 
   static const int DenormalExponent = -ExponentBias + 1;
   static const uint64_t InfinityBits = DOUBLE_CONVERSION_UINT64_2PART_C(0x7FF00000, 00000000);
@@ -414,10 +396,7 @@ struct Single
   }
 
   // Returns the single's bit as uint64.
-  uint32_t AsUint32() const
-  {
-    return bits;
-  }
+  uint32_t AsUint32() const { return bits; }
 
   int Exponent() const
   {
@@ -495,7 +474,7 @@ struct Bignum
   void AssignUInt64(uint64_t value);
   void AssignBignum(const Bignum& other);
 
-  void AssignDecimalString(flat::Span<const char> value);
+  void AssignDecimalString(Flat::Span<const char> value);
 
   void AssignPowerUInt16(uint16_t base, const int exponent);
 
@@ -508,10 +487,7 @@ struct Bignum
   void MultiplyByUInt32(const uint32_t factor);
   void MultiplyByUInt64(const uint64_t factor);
   void MultiplyByPowerOfTen(const int exponent);
-  void Times10()
-  {
-    return MultiplyByUInt32(10);
-  }
+  void Times10() { return MultiplyByUInt32(10); }
   // Pseudocode:
   //  int result = this / other;
   //  this = this % other;
@@ -523,18 +499,9 @@ struct Bignum
   //   0 if a == b, and
   //  +1 if a > b.
   static int Compare(const Bignum& a, const Bignum& b);
-  static bool Equal(const Bignum& a, const Bignum& b)
-  {
-    return Compare(a, b) == 0;
-  }
-  static bool LessEqual(const Bignum& a, const Bignum& b)
-  {
-    return Compare(a, b) <= 0;
-  }
-  static bool Less(const Bignum& a, const Bignum& b)
-  {
-    return Compare(a, b) < 0;
-  }
+  static bool Equal(const Bignum& a, const Bignum& b) { return Compare(a, b) == 0; }
+  static bool LessEqual(const Bignum& a, const Bignum& b) { return Compare(a, b) <= 0; }
+  static bool Less(const Bignum& a, const Bignum& b) { return Compare(a, b) < 0; }
   // Returns Compare(a + b, c);
   static int PlusCompare(const Bignum& a, const Bignum& b, const Bignum& c);
   static const int ChunkSize = sizeof(Chunk) * 8;
@@ -552,10 +519,7 @@ struct Bignum
   }
   void Align(const Bignum& other);
   void Clamp();
-  bool IsClamped() const
-  {
-    return usedBigits == 0 || RawBigit(usedBigits - 1) != 0;
-  }
+  bool IsClamped() const { return usedBigits == 0 || RawBigit(usedBigits - 1) != 0; }
   void Zero()
   {
     usedBigits = 0;
@@ -566,10 +530,7 @@ struct Bignum
   // shiftAmount must be < BigitSize.
   void BigitsShiftLeft(const int shiftAmount);
   // BigitLength includes the "hidden" bigits encoded in the exponent.
-  int BigitLength() const
-  {
-    return usedBigits + bigitExponent;
-  }
+  int BigitLength() const { return usedBigits + bigitExponent; }
   Chunk& RawBigit(const int index);
   const Chunk& RawBigit(const int index) const;
   Chunk BigitOrZero(const int index) const;
@@ -604,7 +565,7 @@ struct Bignum
 //   'v'. If there are two at the same distance, than the number is round up.
 // 'BignumDtoa' expects the given buffer to be big enough to hold all digits
 // and a terminating null-character.
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Span<char> buffer, int* pLength, int* pDecimalPoint);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, Flat::Span<char> buffer, int* pLength, int* pDecimalPoint);
 
 ////////////////////////////////////////////////////////////////////////////////
 // double-conversion/cached-powers.h (amalgamated)
@@ -622,7 +583,7 @@ void GetCachedPowerForDecimalExponent(int requestedExponent, DiyFp* pPower, int*
 ////////////////////////////////////////////////////////////////////////////////
 
 // Converts the parser's already-trimmed arena digit span.
-double StrtodTrimmed(flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
+double StrtodTrimmed(Flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace);
 bool StrtodFast(uint64_t significand, int readDigits, int totalDigits, bool roundUp, int exponent, double* pResult);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -678,7 +639,7 @@ void Bignum::AssignBignum(const Bignum& other)
   usedBigits = other.usedBigits;
 }
 
-static uint64_t ReadUInt64(flat::Span<const char> buffer, const int from, const int digitsToRead)
+static uint64_t ReadUInt64(Flat::Span<const char> buffer, const int from, const int digitsToRead)
 {
   uint64_t result = 0;
   for (int i = from; i < from + digitsToRead; ++i) {
@@ -689,7 +650,7 @@ static uint64_t ReadUInt64(flat::Span<const char> buffer, const int from, const 
   return result;
 }
 
-void Bignum::AssignDecimalString(flat::Span<const char> value)
+void Bignum::AssignDecimalString(Flat::Span<const char> value)
 {
   // 2^64 = 18446744073709551616 > 10^19
   static const int MaxUint64DecimalDigits = 19;
@@ -1271,8 +1232,8 @@ static void InitialScaledStartValues(uint64_t significand, int exponent, bool lo
 static void FixupMultiply10(int estimatedPower, bool isEven, int* pDecimalPoint, Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus);
 // Generates digits from the left to the right and stops when the generated
 // digits yield the shortest decimal representation of v.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::Span<char> buffer, int* pLength);
-void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Span<char> buffer, int* pLength, int* pDecimalPoint)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, Flat::Span<char> buffer, int* pLength);
+void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, Flat::Span<char> buffer, int* pLength, int* pDecimalPoint)
 {
   DOUBLE_CONVERSION_ASSERT(value > 0);
   DOUBLE_CONVERSION_ASSERT(!Double(value).IsSpecial());
@@ -1326,7 +1287,7 @@ void BignumDtoa(double value, bool single, Bignum::Chunk* pWorkspace, flat::Span
 // Precondition: 0 <= (pNumerator+pDeltaPlus) / pDenominator < 10.
 //   If 1 <= (pNumerator+pDeltaPlus) / pDenominator < 10 then no leading 0 digit
 //   will be produced. This should be the standard precondition.
-static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, flat::Span<char> buffer, int* pLength)
+static void GenerateShortestDigits(Bignum* pNumerator, Bignum* pDenominator, Bignum* pDeltaMinus, Bignum* pDeltaPlus, bool isEven, Flat::Span<char> buffer, int* pLength)
 {
   // Small optimization: if pDeltaMinus and pDeltaPlus are the same just reuse
   // one of the two bignums.
@@ -1747,7 +1708,7 @@ static const int MaxSignificantDecimalDigits = 780;
 // When the string starts with "1844674407370955161" no further digit is read.
 // Since 2^64 = 18446744073709551616 it would still be possible read another
 // digit if it was less or equal than 6, but this would complicate the code.
-static uint64_t ReadUint64(flat::Span<const char> buffer, int* pNumberOfReadDigits)
+static uint64_t ReadUint64(Flat::Span<const char> buffer, int* pNumberOfReadDigits)
 {
   uint64_t result = 0;
   int i = 0;
@@ -1888,7 +1849,7 @@ static bool DiyFpStrtod(uint64_t significand, int readDigits, int totalDigits, b
   }
 }
 
-static bool DiyFpStrtod(flat::Span<const char> buffer, int exponent, double* pResult)
+static bool DiyFpStrtod(Flat::Span<const char> buffer, int exponent, double* pResult)
 {
   int readDigits;
   uint64_t significand = ReadUint64(buffer, &readDigits);
@@ -1904,7 +1865,7 @@ static bool DiyFpStrtod(flat::Span<const char> buffer, int exponent, double* pRe
 //   buffer.length() + exponent <= MaxDecimalPower + 1
 //   buffer.length() + exponent > MinDecimalPower
 //   buffer.length() <= MaxDecimalSignificantDigits
-static int CompareBufferWithDiyFp(flat::Span<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
+static int CompareBufferWithDiyFp(Flat::Span<const char> buffer, int exponent, DiyFp diyFp, Bignum::Chunk* pWorkspace)
 {
   DOUBLE_CONVERSION_ASSERT((int)buffer.size + exponent <= MaxDecimalPower + 1);
   DOUBLE_CONVERSION_ASSERT((int)buffer.size + exponent > MinDecimalPower);
@@ -1933,7 +1894,7 @@ static int CompareBufferWithDiyFp(flat::Span<const char> buffer, int exponent, D
 
 // Returns true if the guess is the correct double.
 // Returns false, when guess is either correct or the next-lower double.
-static bool ComputeGuess(flat::Span<const char> trimmed, int exponent, double* pGuess)
+static bool ComputeGuess(Flat::Span<const char> trimmed, int exponent, double* pGuess)
 {
   if (trimmed.IsEmpty()) {
     *pGuess = 0.0;
@@ -1983,7 +1944,7 @@ static bool IsNonZeroDigit(const char digit) { return ('1' <= digit) && (digit <
 [[maybe_unused]]
 #endif
 #endif
-static bool AssertTrimmedDigits(flat::Span<const char> buffer)
+static bool AssertTrimmedDigits(Flat::Span<const char> buffer)
 {
   for (int i = 0; i < (int)buffer.size; ++i) {
     if (!IsDigit(buffer[i])) {
@@ -1993,7 +1954,7 @@ static bool AssertTrimmedDigits(flat::Span<const char> buffer)
   return buffer.IsEmpty() || (IsNonZeroDigit(buffer[0]) && IsNonZeroDigit(buffer[buffer.size - 1]));
 }
 
-double StrtodTrimmed(flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
+double StrtodTrimmed(Flat::Span<const char> trimmed, int exponent, Bignum::Chunk* pWorkspace)
 {
   DOUBLE_CONVERSION_ASSERT((int)trimmed.size <= MaxSignificantDecimalDigits);
   DOUBLE_CONVERSION_ASSERT(AssertTrimmedDigits(trimmed));
@@ -2049,41 +2010,41 @@ double StrtodTrimmed(flat::Span<const char> trimmed, int exponent, Bignum::Chunk
                                                        : 0xFFFD)
 
 ////////////////////////////////////////////////////////////////////////////////
-namespace flat {
+namespace Flat::Document {
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
 // Arena ownership
 ////////////////////////////////////////////////////////////////////////////////
 
-static constexpr size_t EscapeLiteralCount = 128;
-static constexpr size_t HexByteCount = 256;
+static constexpr size_t EscapeLiteralCount      = 128;
+static constexpr size_t HexByteCount            = 256;
 static constexpr size_t Utf8MaximumSequenceSize = 4;
-static constexpr size_t Utf16EscapeSize = 6;
+static constexpr size_t Utf16EscapeSize         = 6;
 
 static constexpr u32 InvalidOffset = UINT32_MAX;
 
-JSON_INLINE static u32 BackAlloc(size_t& back, size_t used, size_t byteCount, size_t alignment = 8)
+///////////////////////////////////////////////////////
+// BackAlloc
+//  Keeps persistent records behind the live object scratch boundary.
+///////////////////////////////////////////////////////
+DOC_INLINE static u32 BackAlloc(size_t frontUsed, size_t byteCount, size_t alignment, size_t* pBack)
 {
-  JSON_ASSERT(alignment && !(alignment & (alignment - 1)), "Buffer allocation alignment must be a power of two.");
-  if (byteCount > back) [[unlikely]] {
-    JSON_WARN("JSON parse buffer cannot allocate %zu bytes.\n", byteCount);
+  DOC_ASSERT(alignment && !(alignment & (alignment - 1)), "Buffer allocation alignment must be a power of two.");
+  size_t offset = (*pBack - byteCount) & ~(alignment - 1);
+  if (byteCount > *pBack || offset < frontUsed) [[unlikely]] {
+    DOC_WARN("JSON parse buffer cannot allocate %zu bytes without overlapping scratch.\n", byteCount);
     return InvalidOffset;
   }
-  size_t offset = (back - byteCount) & ~(alignment - 1);
-  if (offset < used) [[unlikely]] {
-    JSON_WARN("JSON parse buffer is full; allocation needs %zu bytes.\n", byteCount);
-    return InvalidOffset;
-  }
-  back = offset;
+
+  (*pBack) = offset;
   return (u32)offset;
 }
 
-template<typename T, typename Like>
+template <typename T, typename Like>
 using ConstLike = std::conditional_t<std::is_const_v<std::remove_reference_t<Like>>, const T, T>;
 
-struct ObjectEntry
-{
+struct ObjectEntry {
   u32 keyOffset;
   u32 valueOffset;
 };
@@ -2091,14 +2052,70 @@ struct ObjectEntry
 // Match sajson's policy: scan through 100 members, then use binary search.
 static constexpr u32 ObjectBinarySearchThreshold = 100;
 
-template<typename Byte>
-JSON_INLINE static auto ObjectKeySizes(Byte* pIndex) { return (ConstLike<u32, Byte>*)pIndex; }
+template <typename Byte>
+DOC_INLINE static auto ObjectKeySizes(Byte* pIndex) { return (ConstLike<u32, Byte>*)pIndex; }
 
-template<typename Byte>
-JSON_INLINE static auto ObjectEntries(Byte* pIndex, u32 size) { return (ConstLike<ObjectEntry, Byte>*)(ObjectKeySizes(pIndex) + size); }
+template <typename Byte>
+DOC_INLINE static auto ObjectEntries(Byte* pIndex, u32 size) { return (ConstLike<ObjectEntry, Byte>*)(ObjectKeySizes(pIndex) + size); }
 
-template<typename Byte>
-JSON_INLINE static auto ObjectSortOrder(Byte* pIndex, u32 size) { return (ConstLike<u32, Byte>*)(ObjectEntries(pIndex, size) + size); }
+template <typename Byte>
+DOC_INLINE static auto ObjectSortOrder(Byte* pIndex, u32 size) { return (ConstLike<u32, Byte>*)(ObjectEntries(pIndex, size) + size); }
+
+///////////////////////////////////////////////////////
+// ObjectOrderLess
+//  Source positions break duplicate-key ties to preserve first-key lookup.
+///////////////////////////////////////////////////////
+static bool ObjectOrderLess(const char* pIndex, u32 count, u32 left, u32 right)
+{
+  const u32* pKeySizes = ObjectKeySizes(pIndex);
+  if (pKeySizes[left] != pKeySizes[right])
+    return pKeySizes[left] < pKeySizes[right];
+
+  const ObjectEntry* pEntries = ObjectEntries(pIndex, count);
+  const Node* pLeft           = (const Node*)(pIndex + pEntries[left].keyOffset);
+  const Node* pRight          = (const Node*)(pIndex + pEntries[right].keyOffset);
+  int order                   = memcmp(pLeft->GetString().data, pRight->GetString().data, pKeySizes[left]);
+
+  return order ? order < 0 : left < right;
+}
+
+///////////////////////////////////////////////////////
+// SiftObjectOrder
+//  Restores the maximum heap without allocating or recursing.
+///////////////////////////////////////////////////////
+static void SiftObjectOrder(const char* pIndex, u32 count, u32 heapSize, u32 iRoot, u32* pOrder)
+{
+  while (iRoot < heapSize / 2) {
+    u32 iChild = iRoot * 2 + 1;
+    if (iChild + 1 < heapSize && ObjectOrderLess(pIndex, count, pOrder[iChild], pOrder[iChild + 1]))
+      ++iChild;
+
+    if (!ObjectOrderLess(pIndex, count, pOrder[iRoot], pOrder[iChild]))
+      return;
+
+    u32 temporary  = pOrder[iRoot];
+    pOrder[iRoot]  = pOrder[iChild];
+    pOrder[iChild] = temporary;
+    iRoot          = iChild;
+  }
+}
+
+///////////////////////////////////////////////////////
+// SortObjectOrder
+//  Bounds large-object index sorting to O(n log n) time and constant scratch.
+///////////////////////////////////////////////////////
+static void SortObjectOrder(const char* pIndex, u32 count, u32* pOrder)
+{
+  for (u32 i = count / 2; i > 0; --i)
+    SiftObjectOrder(pIndex, count, count, i - 1, pOrder);
+
+  for (u32 remaining = count; remaining > 1; --remaining) {
+    u32 temporary         = pOrder[0];
+    pOrder[0]             = pOrder[remaining - 1];
+    pOrder[remaining - 1] = temporary;
+    SiftObjectOrder(pIndex, count, remaining - 1, 0, pOrder);
+  }
+}
 
 static_assert(sizeof(ObjectEntry) == 8);
 static_assert(alignof(ObjectEntry) == alignof(u32));
@@ -2107,19 +2124,18 @@ static_assert(alignof(ObjectEntry) == alignof(u32));
 // Direct bounded output
 ////////////////////////////////////////////////////////////////////////////////
 
-struct OutputBuffer
-{
-  char* pData = nullptr;
-  size_t size = 0;
-  size_t capacity = 0;
-  Json::Status status = Json::SUCCESS;
+struct OutputBuffer {
+  size_t size         = 0;
+  size_t capacity     = 0;
+  char* pData         = nullptr;
+  Result status = SUCCESS;
 
-  explicit OutputBuffer(Span<char> output) : pData(output.data), capacity(output.size)
+  explicit OutputBuffer(Span<char> output) : capacity(output.size), pData(output.data)
   {
     if (!pData && capacity) {
-      JSON_WARN("JSON output cannot be null when its capacity is nonzero.\n");
-      size = capacity;
-      status = Json::INVALID_ARGUMENT;
+      DOC_WARN("JSON output cannot be null when its capacity is nonzero.\n");
+      size   = capacity;
+      status = ERROR_INVALID_ARGUMENT;
     }
   }
 
@@ -2127,11 +2143,11 @@ struct OutputBuffer
   {
     if (count <= capacity - size)
       return true;
-    if (status != Json::SUCCESS)
+    if (status != SUCCESS)
       return false;
-    JSON_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
-    size = capacity;
-    status = Json::INSUFFICIENT_SPACE;
+    DOC_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
+    size   = capacity;
+    status = ERROR_INSUFFICIENT_SPACE;
     return false;
   }
 
@@ -2173,80 +2189,80 @@ struct OutputBuffer
 
   void Commit(size_t count)
   {
-    JSON_ASSERT(count <= capacity - size, "JSON output commit exceeds reserved capacity.");
+    DOC_ASSERT(count <= capacity - size, "JSON output commit exceeds reserved capacity.");
     size += count;
   }
 
-  Json::Status Finish(size_t* pByteCount = nullptr)
+  Result Finish(size_t* pByteCount = nullptr)
   {
     if (pByteCount)
       *pByteCount = 0;
     Add('\0');
-    if (status != Json::SUCCESS)
+    if (status != SUCCESS)
       return status;
     if (pByteCount)
       *pByteCount = size;
-    return Json::SUCCESS;
+    return SUCCESS;
   }
 };
 
-static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent);
-JSON_INLINE static bool MarshalJsonScalar(const Json& value, OutputBuffer& buffer);
-static void WriteString(OutputBuffer& buffer, String string);
-static void WriteEscapedString(OutputBuffer& buffer, String string);
+static void MarshalJson(const Node& value, bool pretty, int indent, OutputBuffer* pBuffer);
+DOC_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer);
+static void WriteString(String string, OutputBuffer* pBuffer);
+static void WriteEscapedString(String string, OutputBuffer* pBuffer);
 
 static const char EscapeLiteral[EscapeLiteralCount] = {
-  9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 2, 9, 4, 3, 9,
-  9, // 0x00
-  9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
-  9, // 0x10
-  0, 0, 7, 0, 0, 0, 9, 9, 0, 0, 0, 0, 0, 0, 0,
-  6, // 0x20
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 9, 9,
-  0, // 0x30
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  0, // 0x40
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0,
-  0, // 0x50
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  0, // 0x60
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  9, // 0x70
+    9, 9, 9, 9, 9, 9, 9, 9, 9, 1, 2, 9, 4, 3, 9,
+    9, // 0x00
+    9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+    9, // 0x10
+    0, 0, 7, 0, 0, 0, 9, 9, 0, 0, 0, 0, 0, 0, 0,
+    6, // 0x20
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 9, 9,
+    0, // 0x30
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // 0x40
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0,
+    0, // 0x50
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // 0x60
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    9, // 0x70
 };
 
 alignas(signed char) static const signed char HexToInt[HexByteCount] = {
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x00
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x10
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x20
-  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  -1, -1, -1, -1, -1,
-  -1, // 0x30
-  -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x40
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x50
-  -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x60
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x70
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x80
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0x90
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xa0
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xb0
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xc0
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xd0
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xe0
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, // 0xf0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x00
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x10
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x20
+    0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  -1, -1, -1, -1, -1,
+    -1, // 0x30
+    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x40
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x50
+    -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x60
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x70
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x80
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0x90
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xa0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xb0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xc0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xd0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xe0
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, // 0xf0
 };
 
 static int Bsr(int value)
@@ -2295,6 +2311,7 @@ static int Bsr(int value)
 // finite binary32 decimal-exponent range. Every other number falls back to the
 // exact amalgamated double-conversion path above.
 
+// clang-format off
 namespace fast_decimal {
 
 struct Value128
@@ -2417,13 +2434,13 @@ static constexpr uint64_t PowerOfFive[] = {
   0x96769950b50d88f4, 0x1314448000000000,
 };
 
-JSON_INLINE static Value128 Multiply(uint64_t a, uint64_t b)
+DOC_INLINE static Value128 Multiply(uint64_t a, uint64_t b)
 {
   unsigned __int128 product = (unsigned __int128)a * b;
   return {(uint64_t)product, (uint64_t)(product >> 64)};
 }
 
-JSON_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
+DOC_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
 {
   size_t index = 2 * (size_t)(exponent - SmallestPower);
   Value128 product = Multiply(significand, PowerOfFive[index]);
@@ -2436,9 +2453,9 @@ JSON_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
   return product;
 }
 
-JSON_INLINE static int BinaryPower(int exponent) { return (((152170 + 65536) * exponent) >> 16) + 63; }
+DOC_INLINE static int BinaryPower(int exponent) { return (((152170 + 65536) * exponent) >> 16) + 63; }
 
-JSON_INLINE static bool Convert(uint64_t significand, int exponent, bool negative, double* pValue)
+DOC_INLINE static bool Convert(uint64_t significand, int exponent, bool negative, double* pValue)
 {
   if (exponent < SmallestPower || exponent > LargestPower)
     return false;
@@ -2487,6 +2504,7 @@ JSON_INLINE static bool Convert(uint64_t significand, int exponent, bool negativ
 }
 
 }  // namespace fast_decimal
+// clang-format on
 
 static int ClampExponent(long long value)
 {
@@ -2504,26 +2522,26 @@ static int ClampExponent(long long value)
 static bool TryShortDecimal(uint64_t significand, int exponent, double* pValue)
 {
   static constexpr uint64_t PowersOfTen[] = {
-    1ull,
-    10ull,
-    100ull,
-    1000ull,
-    10000ull,
-    100000ull,
-    1000000ull,
-    10000000ull,
-    100000000ull,
-    1000000000ull,
-    10000000000ull,
-    100000000000ull,
-    1000000000000ull,
-    10000000000000ull,
-    100000000000000ull,
-    1000000000000000ull,
-    10000000000000000ull,
-    100000000000000000ull,
-    1000000000000000000ull,
-    10000000000000000000ull,
+      1ull,
+      10ull,
+      100ull,
+      1000ull,
+      10000ull,
+      100000ull,
+      1000000ull,
+      10000000ull,
+      100000000ull,
+      1000000000ull,
+      10000000000ull,
+      100000000000ull,
+      1000000000000ull,
+      10000000000000ull,
+      100000000000000ull,
+      1000000000000000ull,
+      10000000000000000ull,
+      100000000000000000ull,
+      1000000000000000000ull,
+      10000000000000000000ull,
   };
   if (exponent < 0) {
     int magnitude = -exponent;
@@ -2538,7 +2556,7 @@ static bool TryShortDecimal(uint64_t significand, int exponent, double* pValue)
   return true;
 }
 
-JSON_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigitCount, unsigned digit)
+DOC_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigitCount, unsigned digit)
 {
   if (*pDigitCount == 19)
     return false;
@@ -2547,10 +2565,10 @@ JSON_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDig
   return true;
 }
 
-JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+DOC_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
 {
   const char* pCursor = pStart;
-  bool negative = false;
+  bool negative       = false;
   if (pCursor < pEnd && *pCursor == '-') {
     negative = true;
     ++pCursor;
@@ -2559,7 +2577,7 @@ JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, cons
     return false;
 
   uint64_t significand = 0;
-  int digitCount = 0;
+  int digitCount       = 0;
 
   if (*pCursor == '0') {
     ++digitCount;
@@ -2599,7 +2617,7 @@ JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, cons
       return false;
     const int limit = INT_MAX / 2;
     do {
-      int digit = *pCursor++ - '0';
+      int digit        = *pCursor++ - '0';
       explicitExponent = explicitExponent > (limit - digit) / 10 ? limit : explicitExponent * 10 + digit;
     } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
     if (exponentNegative)
@@ -2629,22 +2647,21 @@ JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, cons
 //  Parses one decimal directly with scratch space in the buffer front.
 ///////////////////////////////////////////////////////
 static constexpr int DoubleParseMaxSignificantDigits = 772;
-static constexpr size_t DoubleParseScratchCapacity = DoubleParseMaxSignificantDigits + 1 + alignof(double_conversion::Bignum::Chunk) - 1 +
-                                                     2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
+static constexpr size_t DoubleParseScratchCapacity =
+    DoubleParseMaxSignificantDigits + 1 + alignof(double_conversion::Bignum::Chunk) - 1 + 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
 
-JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t back, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+DOC_INLINE static Result StringToDouble(char* pDoubleScratch, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
 {
-  using enum Json::Status;
   if (TryFastDouble(pStart, pEnd, ppOutputEnd, pOutputValue))
     return SUCCESS;
   const char* pCursor = pStart;
-  bool negative = false;
+  bool negative       = false;
   if (pCursor < pEnd && *pCursor == '-') {
     negative = true;
     ++pCursor;
   }
   if (pCursor == pEnd)
-    return MALFORMED;
+    return ERROR_MALFORMED;
 
   const char* pInteger = pCursor;
   const char* pIntegerEnd;
@@ -2656,15 +2673,15 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
     } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
     pIntegerEnd = pCursor;
   } else {
-    return MALFORMED;
+    return ERROR_MALFORMED;
   }
 
-  const char* pFraction = pCursor;
+  const char* pFraction    = pCursor;
   const char* pFractionEnd = pCursor;
   if (pCursor < pEnd && *pCursor == '.') {
     pFraction = ++pCursor;
     if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
-      return MALFORMED;
+      return ERROR_MALFORMED;
     do {
       ++pCursor;
     } while (pCursor < pEnd && '0' <= *pCursor && *pCursor <= '9');
@@ -2680,7 +2697,7 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
       ++pCursor;
     }
     if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
-      return MALFORMED;
+      return ERROR_MALFORMED;
     const int limit = INT_MAX / 2;
     do {
       int digit = *pCursor++ - '0';
@@ -2693,15 +2710,15 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
       explicitExponent = -explicitExponent;
   }
 
-  int significantDigits = 0;
-  int trailingZeroes = 0;
+  int significantDigits          = 0;
+  int trailingZeroes             = 0;
   int insignificantIntegerDigits = 0;
-  int decimalExponent = 0;
-  bool nonzeroDigitDropped = false;
-  uint64_t fastSignificand = 0;
-  int fastReadDigits = 0;
-  int firstFastDroppedDigit = 0;
-  auto recordFastDigit = [&](char digit) {
+  int decimalExponent            = 0;
+  bool nonzeroDigitDropped       = false;
+  uint64_t fastSignificand       = 0;
+  int fastReadDigits             = 0;
+  int firstFastDroppedDigit      = 0;
+  auto recordFastDigit           = [&](char digit) {
     if (fastSignificand <= UINT64_MAX / 10 - 1) {
       fastSignificand = fastSignificand * 10 + digit - '0';
       ++fastReadDigits;
@@ -2736,7 +2753,7 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
     if (significantDigits < DoubleParseMaxSignificantDigits) {
       ++significantDigits;
       decimalExponent = ClampExponent((long long)decimalExponent - 1);
-      trailingZeroes = *pScan == '0' ? trailingZeroes + 1 : 0;
+      trailingZeroes  = *pScan == '0' ? trailingZeroes + 1 : 0;
       recordFastDigit(*pScan);
     } else {
       nonzeroDigitDropped |= *pScan != '0';
@@ -2746,10 +2763,10 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
   decimalExponent = ClampExponent((long long)decimalExponent + insignificantIntegerDigits + explicitExponent);
   if (significantDigits && !nonzeroDigitDropped) {
     double converted;
-    bool roundUp = firstFastDroppedDigit >= '5';
+    bool roundUp           = firstFastDroppedDigit >= '5';
     bool convertedDirectly = fastReadDigits == significantDigits && TryShortDecimal(fastSignificand, decimalExponent, &converted);
     if (convertedDirectly || double_conversion::StrtodFast(fastSignificand, fastReadDigits, significantDigits, roundUp, decimalExponent, &converted)) {
-      *ppOutputEnd = pCursor;
+      *ppOutputEnd  = pCursor;
       *pOutputValue = negative ? -converted : converted;
       return SUCCESS;
     }
@@ -2757,18 +2774,15 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
   int keptDigits = significantDigits;
   if (nonzeroDigitDropped) {
     decimalExponent = ClampExponent((long long)decimalExponent - 1);
-    trailingZeroes = 0;
+    trailingZeroes  = 0;
   } else {
     keptDigits -= trailingZeroes;
     decimalExponent = ClampExponent((long long)decimalExponent + trailingZeroes);
   }
 
-  int scratchSize = keptDigits + (nonzeroDigitDropped ? 1 : 0);
-  if (used + (size_t)scratchSize > back) {
-    JSON_WARN("JSON parse buffer has no room for number conversion scratch space.\n");
-    return INSUFFICIENT_SPACE;
-  }
-  char* pDigits = pBase + used;
+  [[maybe_unused]] int scratchSize = keptDigits + (nonzeroDigitDropped ? 1 : 0);
+  DOC_ASSERT((size_t)scratchSize <= (size_t)DoubleParseMaxSignificantDigits + 1);
+  char* pDigits     = pDoubleScratch;
   int digitPosition = 0;
 
   pScan = pInteger;
@@ -2789,14 +2803,14 @@ JSON_INLINE static Json::Status StringToDouble(char* pBase, size_t used, size_t 
   double converted = 0;
   if (digitPosition) {
     uintptr_t workspaceAddress = ((uintptr_t)(pDigits + scratchSize) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
-    size_t workspaceSize = 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
-    if (workspaceAddress + workspaceSize > (uintptr_t)(pBase + back)) {
-      JSON_WARN("JSON parse buffer has no room for exact number conversion.\n");
-      return INSUFFICIENT_SPACE;
+    size_t workspaceSize       = 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
+    if (workspaceAddress + workspaceSize > (uintptr_t)(pDoubleScratch + DoubleParseScratchCapacity)) {
+      DOC_WARN("JSON parse buffer has no room for exact number conversion.\n");
+      return ERROR_INSUFFICIENT_SPACE;
     }
     converted = double_conversion::StrtodTrimmed(Span<const char>(digitPosition, pDigits), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
   }
-  *ppOutputEnd = pCursor;
+  *ppOutputEnd  = pCursor;
   *pOutputValue = negative ? -converted : converted;
   return SUCCESS;
 }
@@ -2811,7 +2825,7 @@ static char* UnsignedLongToString(char* pOutput, unsigned long long value)
   pOutput[length] = '\0';
   for (size_t left = 0, right = length - 1; left < right; ++left, --right) {
     char temporary = pOutput[left];
-    pOutput[left] = pOutput[right];
+    pOutput[left]  = pOutput[right];
     pOutput[right] = temporary;
   }
   return pOutput + length;
@@ -2822,47 +2836,47 @@ static char* LongToString(char* pOutput, long long value)
   unsigned long long magnitude = value;
   if (value < 0) {
     *pOutput++ = '-';
-    magnitude = 0 - magnitude;
+    magnitude  = 0 - magnitude;
   }
   return UnsignedLongToString(pOutput, magnitude);
 }
 
-static void WriteLong(OutputBuffer& buffer, long long value)
+static void WriteLong(long long value, OutputBuffer* pBuffer)
 {
-  char* pOutput = buffer.Reserve(32);
+  char* pOutput = pBuffer->Reserve(32);
   if (!pOutput)
     return;
-  buffer.Commit(LongToString(pOutput, value) - pOutput);
+  pBuffer->Commit(LongToString(pOutput, value) - pOutput);
 }
 
 ///////////////////////////////////////////////////////
 // WriteDouble
 //  Writes the shortest round-trippable number directly into the output sink.
 ///////////////////////////////////////////////////////
-static void WriteDouble(OutputBuffer& buffer, double value, bool single)
+static void WriteDouble(double value, bool single, OutputBuffer* pBuffer)
 {
   double_conversion::Double inspected(value);
   if (inspected.IsNan()) {
-    buffer.Append("null");
+    pBuffer->Append("null");
     return;
   }
   if (inspected.IsInfinite()) {
     if (value < 0)
-      buffer.Add('-');
-    buffer.Append("1e5000");
+      pBuffer->Add('-');
+    pBuffer->Append("1e5000");
     return;
   }
   if (-0x1p63 <= value && value < 0x1p63) {
     long long integer = (long long)value;
     if ((double)integer == value) {
-      WriteLong(buffer, integer);
+      WriteLong(integer, pBuffer);
       return;
     }
   }
 
   // Shortest digits and exact bignum workspace live in the sink's uncommitted
   // conversion scratch. This intentionally uses one universal conversion path.
-  char* pOutput = buffer.Reserve(32);
+  char* pOutput = pBuffer->Reserve(32);
   if (!pOutput)
     return;
   bool negative = inspected.Sign() < 0;
@@ -2872,13 +2886,13 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
   int point;
   if (value == 0) {
     pOutput[0] = '0';
-    length = 1;
-    point = 1;
+    length     = 1;
+    point      = 1;
   } else {
     Span<char> digits(18, pOutput);
     uintptr_t workspaceAddress = ((uintptr_t)(pOutput + 32) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
-    size_t workspaceSize = 4 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
-    if (!buffer.Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize))
+    size_t workspaceSize       = 4 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
+    if (!pBuffer->Reserve(workspaceAddress - (uintptr_t)pOutput + workspaceSize))
       return;
     double_conversion::BignumDtoa(value, single, (double_conversion::Bignum::Chunk*)workspaceAddress, digits, &length, &point);
   }
@@ -2906,10 +2920,10 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
       pOutput[1] = '.';
       ++length;
     }
-    pOutput[length++] = 'e';
-    pOutput[length++] = exponent < 0 ? '-' : '+';
+    pOutput[length++]      = 'e';
+    pOutput[length++]      = exponent < 0 ? '-' : '+';
     unsigned int magnitude = exponent < 0 ? -exponent : exponent;
-    length = UnsignedLongToString(pOutput + length, magnitude) - pOutput;
+    length                 = UnsignedLongToString(pOutput + length, magnitude) - pOutput;
   }
 
   // JSON has one spelling for zero, so suppress DoubleToAscii's sign for
@@ -2919,24 +2933,24 @@ static void WriteDouble(OutputBuffer& buffer, double value, bool single)
     pOutput[0] = '-';
     ++length;
   }
-  buffer.Commit(length);
+  pBuffer->Commit(length);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable value access
 ////////////////////////////////////////////////////////////////////////////////
 
-JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
+DOC_INLINE static const Node* FindObjectValue(const Node& object, String key)
 {
-  const char* pObject = (const char*)&object + object.objectOffset;
-  const u32* pKeySizes = ObjectKeySizes(pObject);
+  const char* pObject         = (const char*)&object + object.objectOffset;
+  const u32* pKeySizes        = ObjectKeySizes(pObject);
   const ObjectEntry* pEntries = ObjectEntries(pObject, object.objectSize);
   if (object.objectSize <= ObjectBinarySearchThreshold) {
     u32 i = 0;
     if (object.objectSize >= 16 && key.size <= UINT32_MAX) {
-      using KeySizeVector = u32 __attribute__((vector_size(16)));
-      KeySizeVector wanted = {(u32)key.size, (u32)key.size, (u32)key.size, (u32)key.size};
-      u32 vectorEnd = object.objectSize & ~3u;
+      using KeySizeVector [[gnu::vector_size(16)]] = u32;
+      KeySizeVector wanted                         = {(u32)key.size, (u32)key.size, (u32)key.size, (u32)key.size};
+      u32 vectorEnd                                = object.objectSize & ~3u;
       for (; i < vectorEnd; i += 4) {
         KeySizeVector sizes;
         memcpy(&sizes, pKeySizes + i, sizeof(sizes));
@@ -2947,9 +2961,9 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
           if (pKeySizes[j] != key.size)
             continue;
           const ObjectEntry& entry = pEntries[j];
-          const Json* pName = (const Json*)(pObject + entry.keyOffset);
+          const Node* pName        = (const Node*)(pObject + entry.keyOffset);
           if (!memcmp(pName->GetString().data, key.data, key.size))
-            return (const Json*)(pObject + entry.valueOffset);
+            return (const Node*)(pObject + entry.valueOffset);
         }
       }
     }
@@ -2957,20 +2971,20 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
       if (pKeySizes[i] != key.size)
         continue;
       const ObjectEntry& entry = pEntries[i];
-      const Json* pName = (const Json*)(pObject + entry.keyOffset);
+      const Node* pName        = (const Node*)(pObject + entry.keyOffset);
       if (!memcmp(pName->GetString().data, key.data, key.size))
-        return (const Json*)(pObject + entry.valueOffset);
+        return (const Node*)(pObject + entry.valueOffset);
     }
     return nullptr;
   }
 
   const u32* pOrder = ObjectSortOrder(pObject, object.objectSize);
-  u32 first = 0;
-  u32 last = object.objectSize;
+  u32 first         = 0;
+  u32 last          = object.objectSize;
   while (first < last) {
-    u32 middle = first + (last - first) / 2;
+    u32 middle     = first + (last - first) / 2;
     u32 entryIndex = pOrder[middle];
-    u32 keySize = pKeySizes[entryIndex];
+    u32 keySize    = pKeySizes[entryIndex];
     if (keySize < key.size) {
       first = middle + 1;
       continue;
@@ -2980,8 +2994,8 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
       continue;
     }
     const ObjectEntry& entry = pEntries[entryIndex];
-    const Json* pName = (const Json*)(pObject + entry.keyOffset);
-    int order = memcmp(pName->GetString().data, key.data, key.size);
+    const Node* pName        = (const Node*)(pObject + entry.keyOffset);
+    int order                = memcmp(pName->GetString().data, key.data, key.size);
     if (order < 0)
       first = middle + 1;
     else
@@ -2993,54 +3007,51 @@ JSON_INLINE static const Json* FindObjectValue(const Json& object, String key)
   if (pKeySizes[entryIndex] != key.size)
     return nullptr;
   const ObjectEntry& entry = pEntries[entryIndex];
-  const Json* pName = (const Json*)(pObject + entry.keyOffset);
+  const Node* pName        = (const Node*)(pObject + entry.keyOffset);
   if (memcmp(pName->GetString().data, key.data, key.size))
     return nullptr;
-  return (const Json*)(pObject + entry.valueOffset);
+  return (const Node*)(pObject + entry.valueOffset);
 }
 
 ///////////////////////////////////////////////////////
-// Json::Contains
+// Node::Contains
 //  Finds an object key through its immutable size scan or sorted index.
 ///////////////////////////////////////////////////////
-bool Json::Contains(String key) const
-{
-  return IsObject() && FindObjectValue(*this, key);
-}
+bool Node::Contains(String key) const { return IsObject() && FindObjectValue(*this, key); }
 
-const Json* Json::MemberAt(size_t index, String* pKey) const
+const Node* Node::MemberAt(size_t index, String* pKey) const
 {
   if (!IsObject() || index >= objectSize)
     return nullptr;
 
-  const char* pObject = (const char*)this + objectOffset;
+  const char* pObject      = (const char*)this + objectOffset;
   const ObjectEntry& entry = ObjectEntries(pObject, objectSize)[index];
-  const Json* pName = (const Json*)(pObject + entry.keyOffset);
+  const Node* pName        = (const Node*)(pObject + entry.keyOffset);
   if (pKey)
     *pKey = pName->GetString();
 
-  return (const Json*)(pObject + entry.valueOffset);
+  return (const Node*)(pObject + entry.valueOffset);
 }
 
-const Json& Json::operator[](String key) const
+const Node& Node::operator[](String key) const
 {
-  JSON_ASSERT(IsObject(), "JSON value is not an object.");
-  const Json* pValue = FindObjectValue(*this, key);
-  JSON_ASSERT(pValue, "JSON object does not contain requested key.");
+  DOC_ASSERT(IsObject(), "JSON value is not an object.");
+  const Node* pValue = FindObjectValue(*this, key);
+  DOC_ASSERT(pValue, "JSON object does not contain requested key.");
   return *pValue;
 }
 
-Json::Status Json::ToString(Span<char> output) const
+Result Node::ToString(Span<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson(*this, buffer, false, 0);
+  MarshalJson(*this, false, 0, &buffer);
   return buffer.Finish();
 }
 
-Json::Status Json::ToStringPretty(Span<char> output) const
+Result Node::ToStringPretty(Span<char> output) const
 {
   OutputBuffer buffer(output);
-  MarshalJson(*this, buffer, true, 0);
+  MarshalJson(*this, true, 0, &buffer);
   return buffer.Finish();
 }
 
@@ -3048,61 +3059,63 @@ Json::Status Json::ToStringPretty(Span<char> output) const
 // JSON serialization
 ////////////////////////////////////////////////////////////////////////////////
 
-JSON_INLINE static bool MarshalJsonScalar(const Json& value, OutputBuffer& buffer)
+DOC_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer)
 {
   switch (value.type)
   {
-    case Json::TYPE_NULL:
-      buffer.Append("null");
+    case TYPE_NULL:
+      pBuffer->Append("null");
       return true;
-    case Json::TYPE_STRING:
-      WriteString(buffer, value.GetString());
+    case TYPE_STRING:
+      WriteString(value.GetString(), pBuffer);
       return true;
-    case Json::TYPE_PLAIN_STRING:
-      buffer.AppendQuoted(value.GetString().data, value.stringSize);
+    case TYPE_PLAIN_STRING:
+      pBuffer->AppendQuoted(value.GetString().data, value.stringSize);
       return true;
-    case Json::TYPE_BOOL:
-      if (value.boolValue) buffer.Append("true");
-      else                 buffer.Append("false");
+    case TYPE_BOOL:
+      if (value.boolValue)
+        pBuffer->Append("true");
+      else
+        pBuffer->Append("false");
       return true;
-    case Json::TYPE_LONG:
+    case TYPE_LONG:
       if (0 <= value.longValue && value.longValue < 100) {
-        char* pOutput = buffer.Reserve(2);
+        char* pOutput = pBuffer->Reserve(2);
         if (!pOutput)
           return true;
         if (value.longValue < 10) {
           pOutput[0] = value.longValue + '0';
-          buffer.Commit(1);
+          pBuffer->Commit(1);
         } else {
           pOutput[0] = value.longValue / 10 + '0';
           pOutput[1] = value.longValue % 10 + '0';
-          buffer.Commit(2);
+          pBuffer->Commit(2);
         }
         return true;
       }
       if (0 <= value.longValue && value.longValue < 1000) {
-        char* pOutput = buffer.Reserve(3);
+        char* pOutput = pBuffer->Reserve(3);
         if (!pOutput)
           return true;
         pOutput[0] = value.longValue / 100 + '0';
         pOutput[1] = value.longValue / 10 % 10 + '0';
         pOutput[2] = value.longValue % 10 + '0';
-        buffer.Commit(3);
+        pBuffer->Commit(3);
         return true;
       }
-      WriteLong(buffer, value.longValue);
+      WriteLong(value.longValue, pBuffer);
       return true;
-    case Json::TYPE_FLOAT:
-      WriteDouble(buffer, value.floatValue, true);
+    case TYPE_FLOAT:
+      WriteDouble(value.floatValue, true, pBuffer);
       return true;
-    case Json::TYPE_DOUBLE:
-      WriteDouble(buffer, value.doubleValue, false);
+    case TYPE_DOUBLE:
+      WriteDouble(value.doubleValue, false, pBuffer);
       return true;
-    case Json::TYPE_ARRAY:
-    case Json::TYPE_OBJECT:
+    case TYPE_ARRAY:
+    case TYPE_OBJECT:
       return false;
     default:
-      JSON_PANIC("Unhandled JSON type.");
+      DOC_PANIC("Unhandled JSON type.");
   }
 }
 
@@ -3110,21 +3123,21 @@ JSON_INLINE static bool MarshalJsonScalar(const Json& value, OutputBuffer& buffe
 // MarshalJson
 //  Serializes an immutable parsed node directly into caller-owned output.
 ///////////////////////////////////////////////////////
-static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, int indent)
+static void MarshalJson(const Node& value, bool pretty, int indent, OutputBuffer* pBuffer)
 {
-  if (MarshalJsonScalar(value, buffer))
+  if (MarshalJsonScalar(value, pBuffer))
     return;
   switch (value.type)
   {
-    case Json::TYPE_ARRAY: {
-      buffer.Add('[');
-      u32 size = value.arraySize & Json::ArraySizeMask;
+    case TYPE_ARRAY: {
+      pBuffer->Add('[');
+      u32 size = value.arraySize & Node::ArraySizeMask;
       for (u32 i = 0; i < size; ++i) {
-        const Json& child = value[(size_t)i];
+        const Node& child = value[(size_t)i];
         if (!pretty) {
-          if (i && child.type == Json::TYPE_LONG && 0 <= child.longValue && child.longValue < 1000) {
+          if (i && child.type == TYPE_LONG && 0 <= child.longValue && child.longValue < 1000) {
             size_t digits = child.longValue < 10 ? 1 : child.longValue < 100 ? 2 : 3;
-            char* pOutput = buffer.Reserve(digits + 1);
+            char* pOutput = pBuffer->Reserve(digits + 1);
             if (!pOutput)
               return;
             pOutput[0] = ',';
@@ -3138,35 +3151,35 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
               pOutput[2] = child.longValue / 10 % 10 + '0';
               pOutput[3] = child.longValue % 10 + '0';
             }
-            buffer.Commit(digits + 1);
+            pBuffer->Commit(digits + 1);
             continue;
           }
         }
         if (i) {
           if (pretty)
-            buffer.Append(", ");
+            pBuffer->Append(", ");
           else
-            buffer.Add(',');
+            pBuffer->Add(',');
         }
-        if (!MarshalJsonScalar(child, buffer))
-          MarshalJson(child, buffer, pretty, indent);
+        if (!MarshalJsonScalar(child, pBuffer))
+          MarshalJson(child, pretty, indent, pBuffer);
       }
-      buffer.Add(']');
+      pBuffer->Add(']');
       break;
     }
-    case Json::TYPE_OBJECT: {
-      const char* pObject = (const char*)&value + value.objectOffset;
+    case TYPE_OBJECT: {
+      const char* pObject         = (const char*)&value + value.objectOffset;
       const ObjectEntry* pEntries = ObjectEntries(pObject, value.objectSize);
-      buffer.Add('{');
+      pBuffer->Add('{');
       for (u32 i = 0; i < value.objectSize; ++i) {
         const ObjectEntry& entry = pEntries[i];
-        const Json* pName = (const Json*)(pObject + entry.keyOffset);
-        bool wroteHeader = false;
+        const Node* pName        = (const Node*)(pObject + entry.keyOffset);
+        bool wroteHeader         = false;
         if (!pretty) {
-          if (pName->type == Json::TYPE_PLAIN_STRING) {
-            String name = pName->GetString();
-            size_t count = (i ? 1 : 0) + name.size + 3;
-            char* pOutput = buffer.Reserve(count);
+          if (pName->type == TYPE_PLAIN_STRING) {
+            String name   = pName->GetString();
+            size_t count  = (i ? 1 : 0) + name.size + 3;
+            char* pOutput = pBuffer->Reserve(count);
             if (!pOutput)
               return;
             char* pCursor = pOutput;
@@ -3177,8 +3190,8 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
             pCursor += name.size;
             *pCursor++ = '"';
             *pCursor++ = ':';
-            JSON_ASSERT(pCursor == pOutput + count);
-            buffer.Commit(count);
+            DOC_ASSERT(pCursor == pOutput + count);
+            pBuffer->Commit(count);
             wroteHeader = true;
           }
         }
@@ -3186,24 +3199,24 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
           if (pretty) {
             if (value.objectSize > 1) {
               if (i)
-                buffer.Append(",\n");
+                pBuffer->Append(",\n");
               else
-                buffer.Add('\n');
+                pBuffer->Add('\n');
               ++indent;
               for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-                buffer.Append("  ");
+                pBuffer->Append("  ");
             } else if (i) {
-              buffer.Add(',');
+              pBuffer->Add(',');
             }
           } else {
             if (i)
-              buffer.Add(',');
+              pBuffer->Add(',');
           }
           bool wroteName = false;
           if (pretty) {
-            if (pName->type == Json::TYPE_PLAIN_STRING) {
-              String name = pName->GetString();
-              char* pOutput = buffer.Reserve(name.size + 4);
+            if (pName->type == TYPE_PLAIN_STRING) {
+              String name   = pName->GetString();
+              char* pOutput = pBuffer->Reserve(name.size + 4);
               if (!pOutput)
                 return;
               pOutput[0] = '"';
@@ -3211,23 +3224,23 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
               pOutput[name.size + 1] = '"';
               pOutput[name.size + 2] = ':';
               pOutput[name.size + 3] = ' ';
-              buffer.Commit(name.size + 4);
+              pBuffer->Commit(name.size + 4);
               wroteName = true;
             }
           }
           if (!wroteName) {
-            if (pName->type == Json::TYPE_PLAIN_STRING)
-              buffer.AppendQuoted(pName->GetString().data, pName->stringSize);
+            if (pName->type == TYPE_PLAIN_STRING)
+              pBuffer->AppendQuoted(pName->GetString().data, pName->stringSize);
             else
-              WriteString(buffer, pName->GetString());
-            buffer.Add(':');
+              WriteString(pName->GetString(), pBuffer);
+            pBuffer->Add(':');
             if (pretty)
-              buffer.Add(' ');
+              pBuffer->Add(' ');
           }
         }
-        const Json& child = *(const Json*)(pObject + entry.valueOffset);
-        if (!MarshalJsonScalar(child, buffer))
-          MarshalJson(child, buffer, pretty, indent);
+        const Node& child = *(const Node*)(pObject + entry.valueOffset);
+        if (!MarshalJsonScalar(child, pBuffer))
+          MarshalJson(child, pretty, indent, pBuffer);
         if (pretty) {
           if (value.objectSize > 1)
             --indent;
@@ -3235,25 +3248,25 @@ static void MarshalJson(const Json& value, OutputBuffer& buffer, bool pretty, in
       }
       if (pretty) {
         if (value.objectSize > 1) {
-          buffer.Add('\n');
+          pBuffer->Add('\n');
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-            buffer.Append("  ");
+            pBuffer->Append("  ");
           ++indent;
         }
       }
-      buffer.Add('}');
+      pBuffer->Add('}');
       break;
     }
     default:
-      JSON_PANIC("Unhandled JSON type.");
+      DOC_PANIC("Unhandled JSON type.");
   }
 }
 
-static void WriteString(OutputBuffer& buffer, String string)
+static void WriteString(String string, OutputBuffer* pBuffer)
 {
   const char* pData = string.data;
-  size_t size = string.size;
-  size_t plainSize = 0;
+  size_t size       = string.size;
+  size_t plainSize  = 0;
   while (plainSize < size) {
     unsigned char value = pData[plainSize];
     if (value < 0x20 || value >= 0x80 || value == '"' || value == '\\' || value == '/')
@@ -3261,27 +3274,27 @@ static void WriteString(OutputBuffer& buffer, String string)
     ++plainSize;
   }
   if (plainSize == size) {
-    buffer.AppendQuoted(pData, size);
+    pBuffer->AppendQuoted(pData, size);
     return;
   }
 
-  buffer.Add('"');
-  WriteEscapedString(buffer, string);
-  buffer.Add('"');
+  pBuffer->Add('"');
+  WriteEscapedString(string, pBuffer);
+  pBuffer->Add('"');
 }
 
 ///////////////////////////////////////////////////////
 // WriteEscapedString
 //  Escapes a bounded UTF-8 string into JSON syntax.
 ///////////////////////////////////////////////////////
-static void WriteEscapedString(OutputBuffer& buffer, String string)
+static void WriteEscapedString(String string, OutputBuffer* pBuffer)
 {
   const char* pData = string.data;
-  size_t size = string.size;
+  size_t size       = string.size;
   for (size_t offset = 0; offset < size;) {
     wint_t codePoint = pData[offset++] & 255;
     if (codePoint >= 0300) {
-      wint_t mergedCodePoint = THOM_PIKE_BYTE(codePoint);
+      wint_t mergedCodePoint   = THOM_PIKE_BYTE(codePoint);
       size_t continuationCount = THOM_PIKE_LEN(codePoint) - 1;
       if (offset + continuationCount <= size) {
         for (size_t i = 0;;) {
@@ -3300,28 +3313,28 @@ static void WriteEscapedString(OutputBuffer& buffer, String string)
     switch (0 <= codePoint && codePoint <= 127 ? EscapeLiteral[codePoint] : 9)
     {
       case 0:
-        buffer.Add(codePoint);
+        pBuffer->Add(codePoint);
         break;
       case 1:
-        buffer.Append("\\t");
+        pBuffer->Append("\\t");
         break;
       case 2:
-        buffer.Append("\\n");
+        pBuffer->Append("\\n");
         break;
       case 3:
-        buffer.Append("\\r");
+        pBuffer->Append("\\r");
         break;
       case 4:
-        buffer.Append("\\f");
+        pBuffer->Append("\\f");
         break;
       case 5:
-        buffer.Append("\\\\");
+        pBuffer->Append("\\\\");
         break;
       case 6:
-        buffer.Append("\\/");
+        pBuffer->Append("\\/");
         break;
       case 7:
-        buffer.Append("\\\"");
+        pBuffer->Append("\\\"");
         break;
       case 9: {
         unsigned long long utf16 = ENCODE_UTF16(codePoint);
@@ -3333,12 +3346,12 @@ static void WriteEscapedString(OutputBuffer& buffer, String string)
           escape[3] = "0123456789abcdef"[(utf16 & 0x0F00) >> 010];
           escape[4] = "0123456789abcdef"[(utf16 & 0x00F0) >> 004];
           escape[5] = "0123456789abcdef"[(utf16 & 0x000F) >> 000];
-          buffer.Append(escape, Utf16EscapeSize);
+          pBuffer->Append(escape, Utf16EscapeSize);
         } while ((utf16 >>= 16));
         break;
       }
       default:
-        JSON_PANIC("Unhandled character escape code during string serialization.");
+        DOC_PANIC("Unhandled character escape code during string serialization.");
     }
   }
 }
@@ -3347,193 +3360,198 @@ static void WriteEscapedString(OutputBuffer& buffer, String string)
 // MarshalValue
 //  Serializes an initializer-list value tree without intermediate storage.
 ///////////////////////////////////////////////////////
-static void MarshalValue(const JsonValue& value, OutputBuffer& buffer, bool pretty, int indent)
+static void MarshalValue(const Value& value, bool pretty, int indent, OutputBuffer* pBuffer)
 {
   switch (value.type)
   {
-    case JsonValue::TYPE_NULL:
-      buffer.Append("null");
+    case TYPE_NULL:
+      pBuffer->Append("null");
       break;
-    case JsonValue::TYPE_BOOL:
+    case TYPE_BOOL:
       if (value.boolValue)
-        buffer.Append("true");
+        pBuffer->Append("true");
       else
-        buffer.Append("false");
+        pBuffer->Append("false");
       break;
-    case JsonValue::TYPE_LONG:
-      WriteLong(buffer, value.longValue);
+    case TYPE_LONG:
+      WriteLong(value.longValue, pBuffer);
       break;
-    case JsonValue::TYPE_FLOAT:
-      WriteDouble(buffer, value.floatValue, true);
+    case TYPE_FLOAT:
+      WriteDouble(value.floatValue, true, pBuffer);
       break;
-    case JsonValue::TYPE_DOUBLE:
-      WriteDouble(buffer, value.doubleValue, false);
+    case TYPE_DOUBLE:
+      WriteDouble(value.doubleValue, false, pBuffer);
       break;
-    case JsonValue::TYPE_STRING:
-      WriteString(buffer, value.stringValue);
+    case TYPE_STRING:
+      WriteString(value.stringValue, pBuffer);
       break;
-    case JsonValue::TYPE_ARRAY: {
-      const JsonValue* pValues = (const JsonValue*)value.listValue.pData;
-      buffer.Add('[');
+    case TYPE_ARRAY: {
+      const Value* pValues = (const Value*)value.listValue.pData;
+      pBuffer->Add('[');
       for (size_t i = 0; i < value.listValue.size; ++i) {
         if (i) {
-          buffer.Add(',');
+          pBuffer->Add(',');
           if (pretty)
-            buffer.Add(' ');
+            pBuffer->Add(' ');
         }
-        MarshalValue(pValues[i], buffer, pretty, indent);
+        MarshalValue(pValues[i], pretty, indent, pBuffer);
       }
-      buffer.Add(']');
+      pBuffer->Add(']');
       break;
     }
-    case JsonValue::TYPE_OBJECT: {
-      const JsonMember* pMembers = (const JsonMember*)value.listValue.pData;
-      size_t count = value.listValue.size;
-      buffer.Add('{');
+    case TYPE_OBJECT: {
+      const Member* pMembers = (const Member*)value.listValue.pData;
+      size_t count               = value.listValue.size;
+      pBuffer->Add('{');
       for (size_t i = 0; i < count; ++i) {
         if (i)
-          buffer.Add(',');
+          pBuffer->Add(',');
         if (pretty) {
           if (count > 1) {
-            buffer.Add('\n');
+            pBuffer->Add('\n');
             for (int indentationIndex = 0; indentationIndex < indent + 1; ++indentationIndex)
-              buffer.Append("  ");
+              pBuffer->Append("  ");
           }
         }
-        WriteString(buffer, pMembers[i].key);
-        buffer.Add(':');
+        WriteString(pMembers[i].key, pBuffer);
+        pBuffer->Add(':');
         if (pretty)
-          buffer.Add(' ');
-        MarshalValue(pMembers[i].value, buffer, pretty, indent + 1);
+          pBuffer->Add(' ');
+        MarshalValue(pMembers[i].value, pretty, indent + 1, pBuffer);
       }
       if (pretty) {
         if (count > 1) {
-          buffer.Add('\n');
+          pBuffer->Add('\n');
           for (int indentationIndex = 0; indentationIndex < indent; ++indentationIndex)
-            buffer.Append("  ");
+            pBuffer->Append("  ");
         }
       }
-      buffer.Add('}');
+      pBuffer->Add('}');
       break;
     }
     default:
-      JSON_PANIC("Unhandled JSON write type.");
+      DOC_PANIC("Unhandled JSON write type.");
   }
 }
 
-Json::Status WriteJson(const JsonValue& value, Span<char> output)
+Result WriteJSON(Value&& value, Span<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue(value, buffer, false, 0);
+  MarshalValue(value, false, 0, &buffer);
   return buffer.Finish();
 }
 
-Json::Status WriteJsonPretty(const JsonValue& value, Span<char> output)
+Result WriteJSONPretty(Value&& value, Span<char> output)
 {
   OutputBuffer buffer(output);
-  MarshalValue(value, buffer, true, 0);
+  MarshalValue(value, true, 0, &buffer);
   return buffer.Finish();
 }
 
-Json::Status WriteJson(const Json& value, Span<char> output) { return value.ToString(output); }
+Result WriteJSON(const Node& value, Span<char> output) { return value.ToString(output); }
 
-Json::Status WriteJsonPretty(const Json& value, Span<char> output) { return value.ToStringPretty(output); }
+Result WriteJSONPretty(const Node& value, Span<char> output) { return value.ToStringPretty(output); }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Immutable backward parser
 ////////////////////////////////////////////////////////////////////////////////
 
-JSON_INLINE static Json::Status StoreNode(char* pBase, size_t used, size_t& back, Json node, size_t subtreeEnd, u32* pNodeOffset)
+///////////////////////////////////////////////////////
+// StoreNode
+//  Publishes relative offsets only after reserving a complete immutable node.
+///////////////////////////////////////////////////////
+DOC_INLINE static Result StoreNode(size_t frontUsed, Node node, size_t subtreeEnd, char* pBase, size_t* pBack, u32* pNodeOffset)
 {
-  u32 offset = BackAlloc(back, used, sizeof(Json), alignof(Json));
+  u32 offset = BackAlloc(frontUsed, sizeof(Node), alignof(Node), pBack);
   if (offset == InvalidOffset)
-    return Json::INSUFFICIENT_SPACE;
-  JSON_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
+    return ERROR_INSUFFICIENT_SPACE;
+  DOC_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
   node.span = (u32)(subtreeEnd - offset);
   switch (node.type)
   {
-    case Json::TYPE_STRING:
-    case Json::TYPE_PLAIN_STRING:
-      JSON_ASSERT(node.stringOffset >= offset);
+    case TYPE_STRING:
+    case TYPE_PLAIN_STRING:
+      DOC_ASSERT(node.stringOffset >= offset);
       node.stringOffset -= offset;
       break;
-    case Json::TYPE_ARRAY:
-      JSON_ASSERT(node.arrayOffset >= offset);
+    case TYPE_ARRAY:
+      DOC_ASSERT(node.arrayOffset >= offset);
       node.arrayOffset -= offset;
       break;
-    case Json::TYPE_OBJECT:
-      JSON_ASSERT(node.objectOffset >= offset);
+    case TYPE_OBJECT:
+      DOC_ASSERT(node.objectOffset >= offset);
       node.objectOffset -= offset;
       break;
     default:
       break;
   }
-  new (pBase + offset) Json(node);
+  MemCopy((Node*)(pBase + offset), &node);
   *pNodeOffset = offset;
-  return Json::SUCCESS;
+  return SUCCESS;
 }
 
-JSON_INLINE static Json::Status ParseNumberNode(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd)
+///////////////////////////////////////////////////////
+// ParseNumberNode
+//  Keeps exact signed integers before falling back to decimal conversion.
+///////////////////////////////////////////////////////
+DOC_INLINE static Result ParseNumberNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor, u32* pNodeOffset)
 {
-  using enum Json::Status;
-  using enum Json::Type;
-  size_t subtreeEnd = back;
-  const char* pStart = pCursor;
-  int sign = 1;
-  if (pCursor < pEnd && *pCursor == '-') {
+  size_t subtreeEnd  = (*pBack);
+  const char* pStart = (*ppCursor);
+  int sign           = 1;
+  if ((*ppCursor) < pEnd && *(*ppCursor) == '-') {
     sign = -1;
-    ++pCursor;
+    ++(*ppCursor);
   }
-  if (pCursor == pEnd || *pCursor < '0' || '9' < *pCursor)
-    return MALFORMED;
+  if ((*ppCursor) == pEnd || *(*ppCursor) < '0' || '9' < *(*ppCursor))
+    return ERROR_MALFORMED;
 
-  Json node;
+  Node node;
   unsigned long long magnitude = 0;
-  unsigned lastDigit = sign < 0 ? 8 : 7;
-  if (*pCursor == '0') {
-    ++pCursor;
-    if (pCursor < pEnd && (*pCursor == '.' || *pCursor == 'e' || *pCursor == 'E'))
+  unsigned lastDigit           = sign < 0 ? 8 : 7;
+  if (*(*ppCursor) == '0') {
+    ++(*ppCursor);
+    if ((*ppCursor) < pEnd && (*(*ppCursor) == '.' || *(*ppCursor) == 'e' || *(*ppCursor) == 'E'))
       goto UseDouble;
-    node.type = TYPE_LONG;
+    node.type      = TYPE_LONG;
     node.longValue = 0;
-    return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+    return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
   }
 
-  magnitude = *pCursor++ - '0';
-  while (pCursor < pEnd) {
-    unsigned character = *pCursor & 255;
+  magnitude = *(*ppCursor)++ - '0';
+  while ((*ppCursor) < pEnd) {
+    unsigned character = *(*ppCursor) & 255;
     if ('0' <= character && character <= '9') {
       unsigned digit = character - '0';
-      if (magnitude > 922337203685477580ull ||
-          (magnitude == 922337203685477580ull && digit > lastDigit))
+      if (magnitude > 922337203685477580ull || (magnitude == 922337203685477580ull && digit > lastDigit))
         goto UseDouble;
       magnitude = magnitude * 10 + digit;
-      ++pCursor;
+      ++(*ppCursor);
     } else if (character == '.' || character == 'e' || character == 'E') {
       goto UseDouble;
     } else {
       break;
     }
   }
-  node.type = TYPE_LONG;
+  node.type      = TYPE_LONG;
   node.longValue = sign < 0 ? magnitude == 1ull << 63 ? LLONG_MIN : -(long long)magnitude : (long long)magnitude;
-  return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+  return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
 
 UseDouble:
   node.type = TYPE_DOUBLE;
   const char* pNumberEnd;
-  Json::Status status = StringToDouble(pBase, used, back, pStart, pEnd, &pNumberEnd, &node.doubleValue);
+  Result status = StringToDouble(pDoubleScratch, pStart, pEnd, &pNumberEnd, &node.doubleValue);
   if (status != SUCCESS)
     return status;
-  pCursor = pNumberEnd;
-  return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+  (*ppCursor) = pNumberEnd;
+  return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
 }
 
 static void ReverseBytes(char* pData, size_t size)
 {
   for (size_t i = 0; i < size / 2; ++i) {
-    char temporary = pData[i];
-    pData[i] = pData[size - i - 1];
+    char temporary      = pData[i];
+    pData[i]            = pData[size - i - 1];
     pData[size - i - 1] = temporary;
   }
 }
@@ -3547,7 +3565,7 @@ static bool IsUtf8ContinuationByte(unsigned byte) { return 0x80 <= byte && byte 
 ///////////////////////////////////////////////////////
 static size_t JsonUtf8SequenceLength(const char* pStart, const char* pEnd)
 {
-  size_t available = pEnd - pStart;
+  size_t available     = pEnd - pStart;
   unsigned leadingByte = pStart[0] & 255;
   if (leadingByte <= 0x7f)
     return 1;
@@ -3579,7 +3597,7 @@ static size_t JsonUtf8SequenceLength(const char* pStart, const char* pEnd)
 
 static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
 {
-  const char* pCursor = pStart;
+  const char* pCursor         = pStart;
   constexpr uint64_t ByteOnes = 0x0101010101010101ull;
   constexpr uint64_t HighBits = 0x8080808080808080ull;
   while (pEnd - pCursor >= 8) {
@@ -3587,10 +3605,7 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
     memcpy(&bytes, pCursor, sizeof(bytes));
     uint64_t quoteBytes = bytes ^ ByteOnes * '"';
     uint64_t slashBytes = bytes ^ ByteOnes * '\\';
-    uint64_t special = ((quoteBytes - ByteOnes) & ~quoteBytes & HighBits) |
-                       ((slashBytes - ByteOnes) & ~slashBytes & HighBits) |
-                       ((bytes - ByteOnes * 0x20) & ~bytes & HighBits) |
-                       (bytes & HighBits);
+    uint64_t special = ((quoteBytes - ByteOnes) & ~quoteBytes & HighBits) | ((slashBytes - ByteOnes) & ~slashBytes & HighBits) | ((bytes - ByteOnes * 0x20) & ~bytes & HighBits) | (bytes & HighBits);
     if (special) {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
       pCursor += __builtin_ctzll(special) / 8;
@@ -3625,76 +3640,81 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
   return nullptr;
 }
 
-JSON_INLINE static bool TryParseSimpleNode(u32& nodeOffset, Json::Status& status, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd)
+///////////////////////////////////////////////////////
+// TryParseSimpleNode
+//  Leaves complex tokens to the recursive parser without consuming them.
+///////////////////////////////////////////////////////
+DOC_INLINE static bool TryParseSimpleNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, const char** ppCursor, u32* pNodeOffset, Result* pStatus)
 {
-  using enum Json::Status;
-  using enum Json::Type;
-  size_t subtreeEnd = back;
-  Json node;
-  switch (*pCursor)
+  size_t subtreeEnd = (*pBack);
+  Node node;
+  switch (*(*ppCursor))
   {
     case 'n':
-      if (pEnd - pCursor < 4 || READ32LE(pCursor) != READ32LE("null"))
+      if (pEnd - (*ppCursor) < 4 || READ32LE((*ppCursor)) != READ32LE("null"))
         return false;
-      pCursor += 4;
+      (*ppCursor) += 4;
       break;
     case 'f':
-      if (pEnd - pCursor < 5 || READ32LE(pCursor + 1) != READ32LE("alse"))
+      if (pEnd - (*ppCursor) < 5 || READ32LE((*ppCursor) + 1) != READ32LE("alse"))
         return false;
-      pCursor += 5;
-      node.type = TYPE_BOOL;
+      (*ppCursor) += 5;
+      node.type      = TYPE_BOOL;
       node.boolValue = false;
       break;
     case 't':
-      if (pEnd - pCursor < 4 || READ32LE(pCursor) != READ32LE("true"))
+      if (pEnd - (*ppCursor) < 4 || READ32LE((*ppCursor)) != READ32LE("true"))
         return false;
-      pCursor += 4;
-      node.type = TYPE_BOOL;
+      (*ppCursor) += 4;
+      node.type      = TYPE_BOOL;
       node.boolValue = true;
       break;
     case '"': {
-      const char* pStringStart = pCursor + 1;
-      const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd);
+      const char* pStringStart = (*ppCursor) + 1;
+      const char* pStringEnd   = FindUnescapedStringEnd(pStringStart, pEnd);
       if (!pStringEnd)
         return false;
-      size_t size = pStringEnd - pStringStart;
-      u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+      size_t size      = pStringEnd - pStringStart;
+      u32 stringOffset = BackAlloc(frontUsed, size + 1, 1, pBack);
       if (stringOffset == InvalidOffset) {
-        status = INSUFFICIENT_SPACE;
+        (*pStatus) = ERROR_INSUFFICIENT_SPACE;
         return true;
       }
       memcpy(pBase + stringOffset, pStringStart, size);
       pBase[stringOffset + size] = '\0';
-      pCursor = pStringEnd + 1;
-      node.type = TYPE_PLAIN_STRING;
-      node.stringOffset = stringOffset;
-      node.stringSize = (u32)size;
+      (*ppCursor)                = pStringEnd + 1;
+      node.type                  = TYPE_PLAIN_STRING;
+      node.stringOffset          = stringOffset;
+      node.stringSize            = (u32)size;
       break;
     }
     default:
       return false;
   }
-  status = StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+  (*pStatus) = StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
   return true;
 }
 
-[[gnu::flatten]] static Json::Status ParseJsonRecursive(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int context, int depth);
+[[gnu::flatten]] static Result ParseJsonRecursive(size_t frontUsed, const char* pEnd, int context, int depth, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor,
+                                                        u32* pNodeOffset);
 
-static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int depth, size_t subtreeEnd)
+///////////////////////////////////////////////////////
+// ParseArrayNode
+//  Preserves source order while building records backward in caller storage.
+///////////////////////////////////////////////////////
+static Result ParseArrayNode(size_t frontUsed, const char* pEnd, int depth, size_t subtreeEnd, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor, u32* pNodeOffset)
 {
-  using enum Json::Status;
-  using enum Json::Type;
   if (!depth)
-    return MALFORMED;
-  Json node;
-  u32 elementCount = 0;
-  u32 lastChildOffset = 0;
+    return ERROR_MALFORMED;
+  Node node;
+  u32 elementCount         = 0;
+  u32 lastChildOffset      = 0;
   bool reversedScalarArray = true;
-  int context = ARRAY;
+  int context              = ARRAY;
   for (;;) {
     u32 childOffset;
-    Json::Status status;
-    const char* pNumber = pCursor;
+    Result status;
+    const char* pNumber = (*ppCursor);
     while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
       ++pNumber;
     if (context & COMMA) {
@@ -3707,68 +3727,68 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
       }
     }
     if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
-      pCursor = pNumber;
-      status = ParseNumberNode(childOffset, pBase, used, back, pCursor, pEnd);
+      (*ppCursor) = pNumber;
+      status      = ParseNumberNode(frontUsed, pEnd, pBase, pBack, pDoubleScratch, ppCursor, &childOffset);
     } else if (pNumber < pEnd) {
       const char* pValue = pNumber;
-      if (TryParseSimpleNode(childOffset, status, pBase, used, back, pValue, pEnd))
-        pCursor = pValue;
+      if (TryParseSimpleNode(frontUsed, pEnd, pBase, pBack, &pValue, &childOffset, &status))
+        (*ppCursor) = pValue;
       else
-        status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+        status = ParseJsonRecursive(frontUsed, pEnd, context, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &childOffset);
     } else {
-      status = ParseJsonRecursive(childOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+      status = ParseJsonRecursive(frontUsed, pEnd, context, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &childOffset);
     }
     if (status == ABSENT_VALUE) {
       if (elementCount && reversedScalarArray) {
-        node.type = TYPE_ARRAY;
+        node.type        = TYPE_ARRAY;
         node.arrayOffset = lastChildOffset;
-        node.arraySize = elementCount | Json::ReversedArrayFlag;
-        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+        node.arraySize   = elementCount | Node::ReversedArrayFlag;
+        return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
       }
-      size_t arraySize = (size_t)elementCount * sizeof(Json);
-      u32 arrayOffset = BackAlloc(back, used, arraySize, alignof(Json));
+      size_t arraySize = (size_t)elementCount * sizeof(Node);
+      u32 arrayOffset  = BackAlloc(frontUsed, arraySize, alignof(Node), pBack);
       if (arrayOffset == InvalidOffset)
-        return INSUFFICIENT_SPACE;
+        return ERROR_INSUFFICIENT_SPACE;
       u32 cursorOffset = lastChildOffset;
       for (u32 i = elementCount; i--;) {
-        const Json* pChild = (const Json*)(pBase + cursorOffset);
-        u32 childSpan = pChild->span;
-        u32 childOffset = arrayOffset + i * sizeof(Json);
-        JSON_ASSERT(cursorOffset >= childOffset);
-        u32 delta = cursorOffset - childOffset;
-        Json child = *pChild;
-        JSON_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
+        const Node* pChild = (const Node*)(pBase + cursorOffset);
+        u32 childSpan      = pChild->span;
+        u32 childOffset    = arrayOffset + i * sizeof(Node);
+        DOC_ASSERT(cursorOffset >= childOffset);
+        u32 delta  = cursorOffset - childOffset;
+        Node child = *pChild;
+        DOC_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
         child.span += delta;
         switch (child.type)
         {
           case TYPE_STRING:
           case TYPE_PLAIN_STRING:
-            JSON_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
+            DOC_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
             child.stringOffset += delta;
             break;
           case TYPE_ARRAY:
-            JSON_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
+            DOC_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
             child.arrayOffset += delta;
             break;
           case TYPE_OBJECT:
-            JSON_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
+            DOC_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
             child.objectOffset += delta;
             break;
           default:
             break;
         }
-        new (pBase + childOffset) Json(child);
+        MemCopy((Node*)(pBase + childOffset), &child);
         cursorOffset += childSpan;
       }
-      node.type = TYPE_ARRAY;
+      node.type        = TYPE_ARRAY;
       node.arrayOffset = arrayOffset;
-      node.arraySize = elementCount;
-      return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+      node.arraySize   = elementCount;
+      return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
     }
     if (status != SUCCESS)
       return status;
     lastChildOffset = childOffset;
-    reversedScalarArray &= ((const Json*)(pBase + childOffset))->span == sizeof(Json);
+    reversedScalarArray &= ((const Node*)(pBase + childOffset))->span == sizeof(Node);
     ++elementCount;
     context = ARRAY | COMMA;
   }
@@ -3778,99 +3798,98 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
 // ParseJson
 //  Parses one subtree backward into immutable buffer records.
 ///////////////////////////////////////////////////////
-[[gnu::flatten]] static Json::Status ParseJsonRecursive(u32& nodeOffset, char* pBase, size_t used, size_t& back, const char*& pCursor, const char* pEnd, int context, int depth)
+[[gnu::flatten]] static Result ParseJsonRecursive(size_t frontUsed, const char* pEnd, int context, int depth, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor,
+                                                        u32* pNodeOffset)
 {
-  using enum Json::Status;
-  using enum Json::Type;
   char encodedBytes[Utf8MaximumSequenceSize];
   unsigned long long integerMagnitude;
   const char* pNumberStart;
   int hexA, hexB, hexC, hexD, character, sign, byteCount, lowSurrogate, integerLastDigit;
   if (!depth)
-    return MALFORMED;
-  size_t subtreeEnd = back;
-  Json node;
-  for (pNumberStart = pCursor, sign = +1; pCursor < pEnd;) {
-    switch ((character = *pCursor++ & 255))
+    return ERROR_MALFORMED;
+  size_t subtreeEnd = (*pBack);
+  Node node;
+  for (pNumberStart = (*ppCursor), sign = +1; (*ppCursor) < pEnd;) {
+    switch ((character = *(*ppCursor)++ & 255))
     {
       case ' ':
       case '\n':
       case '\r':
       case '\t':
-        pNumberStart = pCursor;
+        pNumberStart = (*ppCursor);
         break;
 
       case ',':
         if (context & COMMA) {
-          context = 0;
-          pNumberStart = pCursor;
+          context      = 0;
+          pNumberStart = (*ppCursor);
           break;
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case ':':
         if (context & COLON) {
-          context = 0;
-          pNumberStart = pCursor;
+          context      = 0;
+          pNumberStart = (*ppCursor);
           break;
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case 'n':
         if (context & (KEY | COLON | COMMA))
-          return MALFORMED;
-        if (pCursor + 3 <= pEnd && READ32LE(pCursor - 1) == READ32LE("null")) {
-          pCursor += 3;
-          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+          return ERROR_MALFORMED;
+        if ((*ppCursor) + 3 <= pEnd && READ32LE((*ppCursor) - 1) == READ32LE("null")) {
+          (*ppCursor) += 3;
+          return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case 'f':
         if (context & (KEY | COLON | COMMA))
-          return MALFORMED;
-        if (pCursor + 4 <= pEnd && READ32LE(pCursor) == READ32LE("alse")) {
-          pCursor += 4;
-          node.type = TYPE_BOOL;
+          return ERROR_MALFORMED;
+        if ((*ppCursor) + 4 <= pEnd && READ32LE((*ppCursor)) == READ32LE("alse")) {
+          (*ppCursor) += 4;
+          node.type      = TYPE_BOOL;
           node.boolValue = false;
-          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+          return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case 't':
         if (context & (KEY | COLON | COMMA))
-          return MALFORMED;
-        if (pCursor + 3 <= pEnd && READ32LE(pCursor - 1) == READ32LE("true")) {
-          pCursor += 3;
-          node.type = TYPE_BOOL;
+          return ERROR_MALFORMED;
+        if ((*ppCursor) + 3 <= pEnd && READ32LE((*ppCursor) - 1) == READ32LE("true")) {
+          (*ppCursor) += 3;
+          node.type      = TYPE_BOOL;
           node.boolValue = true;
-          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+          return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case '-':
         if (context & (COLON | COMMA | KEY))
-          return MALFORMED;
-        if (pCursor < pEnd && isdigit(*pCursor)) {
+          return ERROR_MALFORMED;
+        if ((*ppCursor) < pEnd && isdigit(*(*ppCursor))) {
           sign = -1;
           break;
         }
-        return MALFORMED;
+        return ERROR_MALFORMED;
 
       case '0':
         if (context & (COLON | COMMA | KEY))
-          return MALFORMED;
-        if (pCursor < pEnd) {
-          if (*pCursor == '.') {
-            if (pCursor + 1 == pEnd || !isdigit(pCursor[1]))
-              return MALFORMED;
+          return ERROR_MALFORMED;
+        if ((*ppCursor) < pEnd) {
+          if (*(*ppCursor) == '.') {
+            if ((*ppCursor) + 1 == pEnd || !isdigit((*ppCursor)[1]))
+              return ERROR_MALFORMED;
             goto UseDouble;
           }
-          if (*pCursor == 'e' || *pCursor == 'E')
+          if (*(*ppCursor) == 'e' || *(*ppCursor) == 'E')
             goto UseDouble;
         }
-        node.type = TYPE_LONG;
+        node.type      = TYPE_LONG;
         node.longValue = 0;
-        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+        return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
 
       case '1':
       case '2':
@@ -3882,20 +3901,19 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
       case '8':
       case '9':
         if (context & (COLON | COMMA | KEY))
-          return MALFORMED;
+          return ERROR_MALFORMED;
         integerMagnitude = character - '0';
         integerLastDigit = sign < 0 ? 8 : 7;
-        for (; pCursor < pEnd; ++pCursor) {
-          character = *pCursor & 255;
+        for (; (*ppCursor) < pEnd; ++(*ppCursor)) {
+          character = *(*ppCursor) & 255;
           if (isdigit(character)) {
             unsigned digit = character - '0';
-            if (integerMagnitude > 922337203685477580ull ||
-                (integerMagnitude == 922337203685477580ull && digit > (unsigned)integerLastDigit))
+            if (integerMagnitude > 922337203685477580ull || (integerMagnitude == 922337203685477580ull && digit > (unsigned)integerLastDigit))
               goto UseDouble;
             integerMagnitude = integerMagnitude * 10 + digit;
           } else if (character == '.') {
-            if (pCursor + 1 == pEnd || !isdigit(pCursor[1]))
-              return MALFORMED;
+            if ((*ppCursor) + 1 == pEnd || !isdigit((*ppCursor)[1]))
+              return ERROR_MALFORMED;
             goto UseDouble;
           } else if (character == 'e' || character == 'E') {
             goto UseDouble;
@@ -3908,39 +3926,39 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
           node.longValue = integerMagnitude == 1ull << 63 ? LLONG_MIN : -(long long)integerMagnitude;
         else
           node.longValue = integerMagnitude;
-        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+        return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
 
       UseDouble: {
         node.type = TYPE_DOUBLE;
         const char* pNumberEnd;
-        Json::Status numberStatus = StringToDouble(pBase, used, back, pNumberStart, pEnd, &pNumberEnd, &node.doubleValue);
+        Result numberStatus = StringToDouble(pDoubleScratch, pNumberStart, pEnd, &pNumberEnd, &node.doubleValue);
         if (numberStatus != SUCCESS)
           return numberStatus;
-        pCursor = pNumberEnd;
-        return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+        (*ppCursor) = pNumberEnd;
+        return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
       }
 
       case '[': {
         if (context & (COLON | COMMA | KEY))
-          return MALFORMED;
-        return ParseArrayNode(nodeOffset, pBase, used, back, pCursor, pEnd, depth, subtreeEnd);
+          return ERROR_MALFORMED;
+        return ParseArrayNode(frontUsed, pEnd, depth, subtreeEnd, pBase, pBack, pDoubleScratch, ppCursor, pNodeOffset);
       }
 
       case ']':
-        return context & ARRAY ? ABSENT_VALUE : MALFORMED;
+        return context & ARRAY ? ABSENT_VALUE : ERROR_MALFORMED;
 
       case '}':
-        return context & OBJECT ? ABSENT_VALUE : MALFORMED;
+        return context & OBJECT ? ABSENT_VALUE : ERROR_MALFORMED;
 
       case '{': {
         if (context & (COLON | COMMA | KEY))
-          return MALFORMED;
-        size_t scratchMark = used;
-        u32 memberCount = 0;
+          return ERROR_MALFORMED;
+        size_t frontMark = frontUsed;
+        u32 memberCount  = 0;
         for (context = KEY | OBJECT;;) {
           u32 keyOffset;
-          Json::Status status;
-          const char* pKeyStart = pCursor;
+          Result status;
+          const char* pKeyStart = (*ppCursor);
           while (pKeyStart < pEnd && (*pKeyStart == ' ' || *pKeyStart == '\n' || *pKeyStart == '\r' || *pKeyStart == '\t'))
             ++pKeyStart;
           if (context & COMMA) {
@@ -3955,73 +3973,66 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
           if (pKeyStart < pEnd && *pKeyStart == '"') {
             const char* pStringStart = pKeyStart + 1;
             if (const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd)) {
-              size_t keyEnd = back;
-              size_t size = pStringEnd - pStringStart;
-              u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+              size_t keyEnd    = (*pBack);
+              size_t size      = pStringEnd - pStringStart;
+              u32 stringOffset = BackAlloc(frontUsed, size + 1, 1, pBack);
               if (stringOffset == InvalidOffset)
-                return INSUFFICIENT_SPACE;
+                return ERROR_INSUFFICIENT_SPACE;
               memcpy(pBase + stringOffset, pStringStart, size);
               pBase[stringOffset + size] = '\0';
-              Json key;
-              key.type = TYPE_PLAIN_STRING;
+              Node key;
+              key.type         = TYPE_PLAIN_STRING;
               key.stringOffset = stringOffset;
-              key.stringSize = (u32)size;
-              status = StoreNode(pBase, used, back, key, keyEnd, &keyOffset);
-              pCursor = pStringEnd + 1;
+              key.stringSize   = (u32)size;
+              status           = StoreNode(frontUsed, key, keyEnd, pBase, pBack, &keyOffset);
+              (*ppCursor)      = pStringEnd + 1;
             } else {
-              status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+              status = ParseJsonRecursive(frontUsed, pEnd, context, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &keyOffset);
             }
           } else {
-            status = ParseJsonRecursive(keyOffset, pBase, used, back, pCursor, pEnd, context, depth - 1);
+            status = ParseJsonRecursive(frontUsed, pEnd, context, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &keyOffset);
           }
           if (status == ABSENT_VALUE) {
             size_t indexSize = (size_t)memberCount * (sizeof(u32) + sizeof(ObjectEntry));
             if (memberCount > ObjectBinarySearchThreshold)
               indexSize += (size_t)memberCount * sizeof(u32);
-            u32 indexOffset = BackAlloc(back, used, indexSize, alignof(u32));
+            u32 indexOffset = BackAlloc(frontUsed, indexSize, alignof(u32), pBack);
             if (indexOffset == InvalidOffset)
-              return INSUFFICIENT_SPACE;
-            char* pIndex = pBase + indexOffset;
-            u32* pKeySizes = ObjectKeySizes(pIndex);
+              return ERROR_INSUFFICIENT_SPACE;
+            char* pIndex          = pBase + indexOffset;
+            u32* pKeySizes        = ObjectKeySizes(pIndex);
             ObjectEntry* pEntries = ObjectEntries(pIndex, memberCount);
-            const u32* pOffsets = (const u32*)(pBase + scratchMark);
+            const u32* pOffsets   = (const u32*)(pBase + frontMark);
             for (u32 i = 0; i < memberCount; ++i) {
               u32 storedKeyOffset = pOffsets[2 * i];
-              u32 valueOffset = pOffsets[2 * i + 1];
-              const Json* pKey = (const Json*)(pBase + storedKeyOffset);
-              JSON_ASSERT(pKey->IsString());
+              u32 valueOffset     = pOffsets[2 * i + 1];
+              const Node* pKey    = (const Node*)(pBase + storedKeyOffset);
+              DOC_ASSERT(pKey->IsString());
               pKeySizes[i] = pKey->stringSize;
-              pEntries[i] = {
-                storedKeyOffset - indexOffset,
-                valueOffset - indexOffset,
+              pEntries[i]  = {
+                  storedKeyOffset - indexOffset,
+                  valueOffset - indexOffset,
               };
             }
             if (memberCount > ObjectBinarySearchThreshold) {
               u32* pOrder = ObjectSortOrder(pIndex, memberCount);
               for (u32 i = 0; i < memberCount; ++i)
                 pOrder[i] = i;
-              std::sort(pOrder, pOrder + memberCount, [&](u32 left, u32 right) {
-                if (pKeySizes[left] != pKeySizes[right])
-                  return pKeySizes[left] < pKeySizes[right];
-                const Json* pLeft = (const Json*)(pIndex + pEntries[left].keyOffset);
-                const Json* pRight = (const Json*)(pIndex + pEntries[right].keyOffset);
-                int order = memcmp(pLeft->GetString().data, pRight->GetString().data, pKeySizes[left]);
-                return order ? order < 0 : left < right;
-              });
+              SortObjectOrder(pIndex, memberCount, pOrder);
             }
-            node.type = TYPE_OBJECT;
+            node.type         = TYPE_OBJECT;
             node.objectOffset = indexOffset;
-            node.objectSize = memberCount;
-            used = scratchMark;
-            return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+            node.objectSize   = memberCount;
+            frontUsed         = frontMark;
+            return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
           }
           if (status != SUCCESS)
             return status;
-          const Json* pKey = (const Json*)(pBase + keyOffset);
+          const Node* pKey = (const Node*)(pBase + keyOffset);
           if (!pKey->IsString())
-            return MALFORMED;
+            return ERROR_MALFORMED;
           u32 valueOffset;
-          const char* pNumber = pCursor;
+          const char* pNumber = (*ppCursor);
           while (pNumber < pEnd && (*pNumber == ' ' || *pNumber == '\n' || *pNumber == '\r' || *pNumber == '\t'))
             ++pNumber;
           if (pNumber < pEnd && *pNumber == ':') {
@@ -4032,31 +4043,31 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
             pNumber = pEnd;
           }
           if (pNumber < pEnd && (*pNumber == '-' || ('0' <= *pNumber && *pNumber <= '9'))) {
-            pCursor = pNumber;
-            status = ParseNumberNode(valueOffset, pBase, used, back, pCursor, pEnd);
+            (*ppCursor) = pNumber;
+            status      = ParseNumberNode(frontUsed, pEnd, pBase, pBack, pDoubleScratch, ppCursor, &valueOffset);
           } else if (pNumber < pEnd && *pNumber == '[') {
-            size_t childEnd = back;
-            pCursor = pNumber + 1;
-            status = ParseArrayNode(valueOffset, pBase, used, back, pCursor, pEnd, depth - 1, childEnd);
+            size_t childEnd = (*pBack);
+            (*ppCursor)     = pNumber + 1;
+            status          = ParseArrayNode(frontUsed, pEnd, depth - 1, childEnd, pBase, pBack, pDoubleScratch, ppCursor, &valueOffset);
           } else if (pNumber < pEnd) {
             const char* pValue = pNumber;
-            if (TryParseSimpleNode(valueOffset, status, pBase, used, back, pValue, pEnd))
-              pCursor = pValue;
+            if (TryParseSimpleNode(frontUsed, pEnd, pBase, pBack, &pValue, &valueOffset, &status))
+              (*ppCursor) = pValue;
             else
-              status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
+              status = ParseJsonRecursive(frontUsed, pEnd, COLON, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &valueOffset);
           } else {
-            status = ParseJsonRecursive(valueOffset, pBase, used, back, pCursor, pEnd, COLON, depth - 1);
+            status = ParseJsonRecursive(frontUsed, pEnd, COLON, depth - 1, pBase, pBack, pDoubleScratch, ppCursor, &valueOffset);
           }
           if (status != SUCCESS)
             return status;
-          if (back - used < 2 * sizeof(u32)) {
-            JSON_WARN("JSON parse buffer has no room for object offset scratch space.\n");
-            return INSUFFICIENT_SPACE;
+          if (frontUsed + 2 * sizeof(u32) > (*pBack)) {
+            DOC_WARN("JSON parse buffer has no room for object offset scratch space.\n");
+            return ERROR_INSUFFICIENT_SPACE;
           }
-          u32* pOffsets = (u32*)(pBase + used);
-          pOffsets[0] = keyOffset;
-          pOffsets[1] = valueOffset;
-          used += 2 * sizeof(u32);
+          u32* pOffsets = (u32*)(pBase + frontUsed);
+          pOffsets[0]   = keyOffset;
+          pOffsets[1]   = valueOffset;
+          frontUsed += 2 * sizeof(u32);
           ++memberCount;
           context = KEY | COMMA | OBJECT;
         }
@@ -4064,31 +4075,31 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
 
       case '"': {
         if (context & (COLON | COMMA))
-          return MALFORMED;
-        const char* pStringStart = pCursor;
+          return ERROR_MALFORMED;
+        const char* pStringStart = (*ppCursor);
         if (const char* pStringEnd = FindUnescapedStringEnd(pStringStart, pEnd)) {
-          size_t size = pStringEnd - pStringStart;
-          u32 stringOffset = BackAlloc(back, used, size + 1, 1);
+          size_t size      = pStringEnd - pStringStart;
+          u32 stringOffset = BackAlloc(frontUsed, size + 1, 1, pBack);
           if (stringOffset == InvalidOffset)
-            return INSUFFICIENT_SPACE;
+            return ERROR_INSUFFICIENT_SPACE;
           memcpy(pBase + stringOffset, pStringStart, size);
           pBase[stringOffset + size] = '\0';
-          pCursor = pStringEnd + 1;
-          node.type = TYPE_PLAIN_STRING;
-          node.stringOffset = stringOffset;
-          node.stringSize = (u32)size;
-          return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+          (*ppCursor)                = pStringEnd + 1;
+          node.type                  = TYPE_PLAIN_STRING;
+          node.stringOffset          = stringOffset;
+          node.stringSize            = (u32)size;
+          return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
         }
-        u32 nullOffset = BackAlloc(back, used, 1, 1);
+        u32 nullOffset = BackAlloc(frontUsed, 1, 1, pBack);
         if (nullOffset == InvalidOffset)
-          return INSUFFICIENT_SPACE;
+          return ERROR_INSUFFICIENT_SPACE;
         pBase[nullOffset] = '\0';
-        bool arenaFull = false;
-        auto appendBytes = [&](const char* pSource, size_t size) {
+        bool arenaFull    = false;
+        auto appendBytes  = [&](const char* pSource, size_t size) {
           for (size_t i = 0; i < size; ++i) {
             if (arenaFull)
               return;
-            u32 offset = BackAlloc(back, used, 1, 1);
+            u32 offset = BackAlloc(frontUsed, 1, 1, pBack);
             if (offset == InvalidOffset) {
               arenaFull = true;
               return;
@@ -4097,34 +4108,34 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
           }
         };
         for (;;) {
-          if (pCursor >= pEnd)
-            return MALFORMED;
-          switch ((character = *pCursor++ & 255))
+          if ((*ppCursor) >= pEnd)
+            return ERROR_MALFORMED;
+          switch ((character = *(*ppCursor)++ & 255))
           {
             default: {
-              const char* pSequence = pCursor - 1;
-              size_t length = JsonUtf8SequenceLength(pSequence, pEnd);
+              const char* pSequence = (*ppCursor) - 1;
+              size_t length         = JsonUtf8SequenceLength(pSequence, pEnd);
               if (character < 0x20 || !length)
-                return MALFORMED;
+                return ERROR_MALFORMED;
               appendBytes(pSequence, length);
-              pCursor += length - 1;
+              (*ppCursor) += length - 1;
               break;
             }
             case '"': {
               if (arenaFull)
-                return INSUFFICIENT_SPACE;
-              u32 dataOffset = (u32)back;
-              size_t size = nullOffset - dataOffset;
+                return ERROR_INSUFFICIENT_SPACE;
+              u32 dataOffset = (u32)(*pBack);
+              size_t size    = nullOffset - dataOffset;
               ReverseBytes(pBase + dataOffset, size);
-              node.type = TYPE_STRING;
+              node.type         = TYPE_STRING;
               node.stringOffset = dataOffset;
-              node.stringSize = (u32)size;
-              return StoreNode(pBase, used, back, node, subtreeEnd, &nodeOffset);
+              node.stringSize   = (u32)size;
+              return StoreNode(frontUsed, node, subtreeEnd, pBase, pBack, pNodeOffset);
             }
             case '\\':
-              if (pCursor >= pEnd)
-                return MALFORMED;
-              switch ((character = *pCursor++ & 255))
+              if ((*ppCursor) >= pEnd)
+                return ERROR_MALFORMED;
+              switch ((character = *(*ppCursor)++ & 255))
               {
                 case '"':
                 case '/':
@@ -4149,15 +4160,15 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
                   appendBytes("\t", 1);
                   break;
                 case 'u':
-                  if (pCursor + 4 <= pEnd && (hexA = HexToInt[pCursor[0] & 255]) != -1 && (hexB = HexToInt[pCursor[1] & 255]) != -1 && (hexC = HexToInt[pCursor[2] & 255]) != -1 &&
-                      (hexD = HexToInt[pCursor[3] & 255]) != -1) {
+                  if ((*ppCursor) + 4 <= pEnd && (hexA = HexToInt[(*ppCursor)[0] & 255]) != -1 && (hexB = HexToInt[(*ppCursor)[1] & 255]) != -1 && (hexC = HexToInt[(*ppCursor)[2] & 255]) != -1 &&
+                      (hexD = HexToInt[(*ppCursor)[3] & 255]) != -1) {
                     character = hexA << 12 | hexB << 8 | hexC << 4 | hexD;
                     if (!IS_SURROGATE(character)) {
-                      pCursor += 4;
-                    } else if (IS_HIGH_SURROGATE(character) && pCursor + 10 <= pEnd && pCursor[4] == '\\' && pCursor[5] == 'u' && (hexA = HexToInt[pCursor[6] & 255]) != -1 &&
-                               (hexB = HexToInt[pCursor[7] & 255]) != -1 && (hexC = HexToInt[pCursor[8] & 255]) != -1 && (hexD = HexToInt[pCursor[9] & 255]) != -1 &&
+                      (*ppCursor) += 4;
+                    } else if (IS_HIGH_SURROGATE(character) && (*ppCursor) + 10 <= pEnd && (*ppCursor)[4] == '\\' && (*ppCursor)[5] == 'u' && (hexA = HexToInt[(*ppCursor)[6] & 255]) != -1 &&
+                               (hexB = HexToInt[(*ppCursor)[7] & 255]) != -1 && (hexC = HexToInt[(*ppCursor)[8] & 255]) != -1 && (hexD = HexToInt[(*ppCursor)[9] & 255]) != -1 &&
                                IS_LOW_SURROGATE((lowSurrogate = hexA << 12 | hexB << 8 | hexC << 4 | hexD))) {
-                      pCursor += 10;
+                      (*ppCursor) += 10;
                       character = MERGE_UTF16(character, lowSurrogate);
                     } else {
                       appendBytes("\\u", 2);
@@ -4165,52 +4176,53 @@ static Json::Status ParseArrayNode(u32& nodeOffset, char* pBase, size_t used, si
                     }
                     if (character <= 0x7f) {
                       encodedBytes[0] = character;
-                      byteCount = 1;
+                      byteCount       = 1;
                     } else if (character <= 0x7ff) {
                       encodedBytes[0] = 0300 | (character >> 6);
                       encodedBytes[1] = 0200 | (character & 077);
-                      byteCount = 2;
+                      byteCount       = 2;
                     } else if (character <= 0xffff) {
                       encodedBytes[0] = 0340 | (character >> 12);
                       encodedBytes[1] = 0200 | ((character >> 6) & 077);
                       encodedBytes[2] = 0200 | (character & 077);
-                      byteCount = 3;
+                      byteCount       = 3;
                     } else {
                       encodedBytes[0] = 0360 | (character >> 18);
                       encodedBytes[1] = 0200 | ((character >> 12) & 077);
                       encodedBytes[2] = 0200 | ((character >> 6) & 077);
                       encodedBytes[3] = 0200 | (character & 077);
-                      byteCount = 4;
+                      byteCount       = 4;
                     }
                     appendBytes(encodedBytes, byteCount);
                     break;
                   }
-                  return MALFORMED;
+                  return ERROR_MALFORMED;
                 default:
-                  return MALFORMED;
+                  return ERROR_MALFORMED;
               }
               break;
           }
           if (arenaFull)
-            return INSUFFICIENT_SPACE;
+            return ERROR_INSUFFICIENT_SPACE;
         }
       }
 
       default:
-        return MALFORMED;
+        return ERROR_MALFORMED;
     }
   }
-  return depth == DEPTH ? ABSENT_VALUE : MALFORMED;
+  return depth == DEPTH ? ABSENT_VALUE : ERROR_MALFORMED;
 }
 
+
 ///////////////////////////////////////////////////////
-// Json::EstimateSize
+// Node::EstimateSize
 //  Returns a deliberately loose upper bound without reading or parsing input.
 ///////////////////////////////////////////////////////
-size_t Json::EstimateSize(const char* pData, size_t size)
+size_t EstimateSize(const char* pData, size_t size)
 {
   if (!pData && size) {
-    JSON_WARN("JSON size estimate input cannot be null when its size is nonzero.\n");
+    DOC_WARN("JSON size estimate input cannot be null when its size is nonzero.\n");
     return SIZE_MAX;
   }
   if (!size)
@@ -4224,76 +4236,64 @@ size_t Json::EstimateSize(const char* pData, size_t size)
   // space than their source tokens. These bounds are currently 49 bytes per
   // value and 47 per key, plus one
   // string byte.
-  constexpr uint64_t ValueBytes = 2 * sizeof(Json) + 2 * (alignof(Json) - 1) + alignof(u32) - 1;
-  constexpr uint64_t KeyBytes = sizeof(Json) + 4 * sizeof(u32) + sizeof(ObjectEntry) + alignof(Json) - 1;
+  constexpr uint64_t ValueBytes        = 2 * sizeof(Node) + 2 * (alignof(Node) - 1) + alignof(u32) - 1;
+  constexpr uint64_t KeyBytes          = sizeof(Node) + 4 * sizeof(u32) + sizeof(ObjectEntry) + alignof(Node) - 1;
   constexpr uint64_t BytesPerInputByte = 64;
-  static_assert((ValueBytes > KeyBytes ? ValueBytes : KeyBytes) + 1 <= BytesPerInputByte,
-                "JSON parse-size multiplier no longer covers the immutable layout.");
+  static_assert((ValueBytes > KeyBytes ? ValueBytes : KeyBytes) + 1 <= BytesPerInputByte, "JSON parse-size multiplier no longer covers the immutable layout.");
 
-  constexpr uint64_t MaximumBufferSize = UINT32_MAX - 1;
-  if (size > (MaximumBufferSize - DoubleParseScratchCapacity) / BytesPerInputByte)
+  constexpr uint64_t MaximumBufferSize = INT32_MAX;
+  if (size > MaximumBufferSize / BytesPerInputByte)
     return SIZE_MAX;
-  return (size_t)(size * BytesPerInputByte + DoubleParseScratchCapacity);
+  return (size_t)(size * BytesPerInputByte);
 }
 
 ///////////////////////////////////////////////////////
 // ParseJson
 //  Parses one bounded JSON document and rolls back on failure.
 ///////////////////////////////////////////////////////
-static Json::Status ParseJson(const char* pData, size_t size, JsonBuffer* pBuffer)
+static Result ParseJson(const char* pData, size_t size, Arena* pOutput, const Node** ppRoot)
 {
-  using enum Json::Status;
-  if (!pBuffer || !pBuffer->pData) {
-    JSON_WARN("JSON parse buffer cannot be null.\n");
-    return INVALID_ARGUMENT;
+  if (ppRoot)
+    *ppRoot = nullptr;
+
+  if (!pOutput || !pOutput->data) {
+    DOC_WARN("JSON parse buffer cannot be null.\n");
+    return ERROR_INVALID_ARGUMENT;
   }
-  pBuffer->pRoot = nullptr;
+  if (pOutput->capacity > INT32_MAX || pOutput->offset > 0 || pOutput->offset == INT32_MIN || pOutput->Used() > pOutput->capacity || ((uintptr_t)pOutput->data & (alignof(Node) - 1))) {
+    DOC_WARN("JSON arena requires aligned storage and a valid reverse cursor.\n");
+    return ERROR_INVALID_ARGUMENT;
+  }
+
   if (!pData && size) {
-    JSON_WARN("JSON input cannot be null when its size is nonzero.\n");
-    return INVALID_ARGUMENT;
+    DOC_WARN("JSON input cannot be null when its size is nonzero.\n");
+    return ERROR_INVALID_ARGUMENT;
   }
   if (!pData)
     return ABSENT_VALUE;
 
-  size_t backMark = pBuffer->back;
+  size_t back         = (size_t)(pOutput->capacity - pOutput->Used());
+  size_t backMark     = back;
   const char* pCursor = pData;
-  const char* pEnd = pData + size;
-  u32 rootOffset = 0;
-  Json::Status status = ParseJsonRecursive(rootOffset, pBuffer->pData, pBuffer->used, pBuffer->back, pCursor, pEnd, 0, DEPTH);
+  const char* pEnd    = pData + size;
+  u32 rootOffset      = 0;
+  char doubleScratch[DoubleParseScratchCapacity];
+  Result status = ParseJsonRecursive(0, pEnd, 0, DEPTH, (char*)pOutput->data, &back, doubleScratch, &pCursor, &rootOffset);
   while (status == SUCCESS && pCursor < pEnd && (*pCursor == ' ' || *pCursor == '\n' || *pCursor == '\r' || *pCursor == '\t'))
     ++pCursor;
   if (status != SUCCESS || pCursor != pEnd) {
-    pBuffer->back = backMark;
-    return status == INSUFFICIENT_SPACE ? status : MALFORMED;
+    pOutput->offset = -(i32)(pOutput->capacity - backMark);
+    return status == ERROR_INSUFFICIENT_SPACE ? status : ERROR_MALFORMED;
   }
-  pBuffer->pRoot = (const Json*)(pBuffer->pData + rootOffset);
+  pOutput->offset = -(i32)(pOutput->capacity - back);
+  if (ppRoot)
+    *ppRoot = (const Node*)(pOutput->data + rootOffset);
   return SUCCESS;
 }
 
-Json::Status Json::Parse(const char* pData, size_t size, JsonBuffer* pBuffer) { return ParseJson(pData, size, pBuffer); }
+Result ParseJSON(const char* pData, size_t size, Arena* pArena, const Node** ppRoot) { return ParseJson(pData, size, pArena, ppRoot); }
 
-
-const char* Json::StatusToString(Status status)
-{
-  switch (status)
-  {
-    case SUCCESS:
-      return "success";
-    case MALFORMED:
-      return "JSON is malformed.";
-    case ABSENT_VALUE:
-      return "JSON input contains no value.";
-    case INVALID_ARGUMENT:
-      return "Invalid JSON API argument.";
-    case INSUFFICIENT_SPACE:
-      return "JSON buffer has insufficient space.";
-    case IO_ERROR:
-      return "JSON file mapping failed.";
-    default:
-      JSON_PANIC("Unhandled JSON status.");
-  }
-}
 
 ////////////////////////////////////////////////////////////////////////////////
-}  // namespace flat
+}  // namespace Flat::Document
 ////////////////////////////////////////////////////////////////////////////////

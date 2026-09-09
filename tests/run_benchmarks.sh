@@ -28,9 +28,14 @@ mkdir -p "$buildDirectory"
 
 # Intentional word splitting lets BENCHMARK_CXXFLAGS contain multiple flags.
 # shellcheck disable=SC2086
-$CXX $benchmarkFlags -I"$scriptDirectory" \
+$CXX $benchmarkFlags -I"$scriptDirectory" -I"$repositoryRoot" \
   "$scriptDirectory/benchmark_flat_json.cpp" \
-  "$repositoryRoot/flat_json.cpp" \
+  "$repositoryRoot/Document.cpp" \
+  "$repositoryRoot/Container.cpp" \
+  "$repositoryRoot/File.cpp" \
+  "$repositoryRoot/Error.cpp" \
+  "$repositoryRoot/Terminal.cpp" \
+  "$repositoryRoot/Terminal_apple.cpp" \
   -o "$buildDirectory/flat_json"
 
 # shellcheck disable=SC2086

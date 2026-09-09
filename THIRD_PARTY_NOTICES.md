@@ -10,10 +10,10 @@ and bundled components.
 
 | Component | Location or use | Origin and version | License |
 | --- | --- | --- | --- |
-| Original C++ JSON implementation | Basis of `flat_json.cpp`, `flat_json.hpp`, and their tests | [jart/json.cpp](https://github.com/jart/json.cpp), initial import `8fcac1fb7127f9ca7bc667e66d3784e852e8ba87` (exported from Mozilla-Ocho/llamafile) | Apache-2.0 |
+| Original C++ JSON implementation | Basis of `Document.cpp`, `Document.hpp`, and their tests | [jart/json.cpp](https://github.com/jart/json.cpp), initial import `8fcac1fb7127f9ca7bc667e66d3784e852e8ba87` (exported from Mozilla-Ocho/llamafile) | Apache-2.0 |
 | Original C JSON implementation | Historical source of the parser port | [Cosmopolitan `tool/net/ljson.c`](https://github.com/jart/cosmopolitan/blob/master/tool/net/ljson.c), written in 2022 by Justine Tunney and Gautham Venkatasubramanian | ISC |
-| google/double-conversion | Amalgamated into `flat_json.cpp` | [google/double-conversion](https://github.com/google/double-conversion), commit `75b48d66ac835da2c1678926f7d61d6cb2992922`, 2024-05-21 | BSD-3-Clause |
-| fast_float | Eisel-Lemire binary64 parsing subset amalgamated into `flat_json.cpp` | [fastfloat/fast_float](https://github.com/fastfloat/fast_float), version 8.2.3 | MIT |
+| google/double-conversion | Amalgamated into `Document.cpp` | [google/double-conversion](https://github.com/google/double-conversion), commit `75b48d66ac835da2c1678926f7d61d6cb2992922`, 2024-05-21 | BSD-3-Clause |
+| fast_float | Eisel-Lemire binary64 parsing subset amalgamated into `Document.cpp` | [fastfloat/fast_float](https://github.com/fastfloat/fast_float), version 8.2.3 | MIT |
 | sajson | Object-lookup strategy inspiration and temporary benchmark dependency; no sajson source is vendored | [chadaustin/sajson](https://github.com/chadaustin/sajson), commit `68fe32ed6bcb5ac026671d6eadac9024a21c8b05` | MIT |
 | JSON for Modern C++ | Benchmark-only `nlohmann/nlohmann.h` | [nlohmann/json](https://github.com/nlohmann/json), version 3.11.3 | MIT; incorporated Abseil portion under Apache-2.0 |
 | JSONTestSuite | `JSONTestSuite/` test vectors and fixtures | [nst/JSONTestSuite](https://github.com/nst/JSONTestSuite), commit `c2011ba75905d2b36baccd60e4c364e785c29885`, 2024-09-30 | MIT |
@@ -25,7 +25,7 @@ Justine Tunney and Gautham Venkatasubramanian with the original 2022 parser.
 
 The following notices apply under the Apache License, Version 2.0:
 
-- Copyright 2024 Mozilla Foundation (`flat_json.cpp`, `flat_json.hpp`, and related project
+- Copyright 2024 Mozilla Foundation (`Document.cpp`, `Document.hpp`, and related project
   sources originating in the C++ port).
 - Copyright 2018 The Abseil Authors (the small Abseil-derived C++11 utility
   portion embedded in `nlohmann/nlohmann.h`).
@@ -251,7 +251,7 @@ PERFORMANCE OF THIS SOFTWARE.
 ## BSD-3-Clause license — google/double-conversion
 
 Local changes retained by the amalgamation are listed at the start of the
-embedded section in `flat_json.cpp`.
+embedded section in `Document.cpp`.
 
 Copyright 2006-2011, the V8 project authors. All rights reserved.
 Redistribution and use in source and binary forms, with or without
@@ -291,7 +291,7 @@ the temporarily fetched sajson benchmark dependency:
   `nlohmann/nlohmann.h`).
 - Copyright 2016 Nicolas Seriot (`JSONTestSuite/`).
 - Copyright 2021 The fast_float authors (the Eisel-Lemire parsing subset
-  embedded in `flat_json.cpp`).
+  embedded in `Document.cpp`).
 - Copyright 2012-2017 Chad Austin (sajson).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

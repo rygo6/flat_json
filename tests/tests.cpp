@@ -1,6 +1,8 @@
-// -*- mode:c++;indent-tabs-mode:nil;c-basic-offset:4;coding:utf-8 -*-
-// vi: set et ft=cpp ts=4 sts=4 sw=4 fenc=utf-8 :vi
-//
+////////////////////////////////////////////////////////////////////////////////
+// @author: rygo6
+// tests.cpp - Runs JSON, arena, file, and generated property regressions.
+////////////////////////////////////////////////////////////////////////////////
+
 // Copyright 2024 Mozilla Foundation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +17,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "flat_file.hpp"
-#include "flat_json.hpp"
+#include "File.hpp"
+#include "Document.hpp"
+#include <unistd.h>
+
+using namespace Flat;
+using namespace Flat::Document;
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -24,18 +30,15 @@
 #include <string.h>
 #include <time.h>
 
-#define ARRAYLEN(A) \
-    ((sizeof(A) / sizeof(*(A))) / ((unsigned)!(sizeof(A) % sizeof(*(A)))))
+#define ARRAYLEN(A) ((sizeof(A) / sizeof(*(A))) / ((unsigned)!(sizeof(A) % sizeof(*(A)))))
 
 #define STRING(sl) sl, sizeof(sl) - 1
 
-using flat::Json;
 
-static bool
-write_text_file(const char* pPath, const char* pText)
+static bool WriteTextFile(const char* pPath, const char* pText)
 {
-    flat::WritableFile output(pPath);
-    return output.IsValid() && output.Write(pText, strlen(pText)) && output.Flush();
+  WritableFile output(pPath);
+  return output.IsValid() && output.Write(pText, strlen(pText)) && output.Flush();
 }
 
 static const char kHuge[] = R"([
@@ -97,1378 +100,1311 @@ static const char kHuge[] = R"([
 1e00,2e+00,2e-00
 ,"rosebud"])";
 
-#define BENCH(ITERATIONS, WORK_PER_RUN, CODE) \
-    do { \
-        struct timespec start, end; \
-        clock_gettime(CLOCK_MONOTONIC, &start); \
-        for (int __i = 0; __i < ITERATIONS; ++__i) { \
-            __asm__ volatile("" ::: "memory"); \
-            CODE; \
-        } \
-        clock_gettime(CLOCK_MONOTONIC, &end); \
-        long long duration = (end.tv_sec - start.tv_sec) * 1000000000LL + \
-                             (end.tv_nsec - start.tv_nsec); \
-        long long work = (WORK_PER_RUN) * (ITERATIONS); \
-        double nanos = (duration + work - 1) / (double)work; \
-        printf("%10g ns %2dx %s\n", nanos, (ITERATIONS), #CODE); \
-    } while (0)
+#define BENCH(ITERATIONS, WORK_PER_RUN, CODE)                                                        \
+  do {                                                                                               \
+    struct timespec start, end;                                                                      \
+    clock_gettime(CLOCK_MONOTONIC, &start);                                                          \
+    for (int __i = 0; __i < ITERATIONS; ++__i) {                                                     \
+      __asm__ volatile("" ::: "memory");                                                             \
+      CODE;                                                                                          \
+    }                                                                                                \
+    clock_gettime(CLOCK_MONOTONIC, &end);                                                            \
+    long long duration = (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec); \
+    long long work     = (WORK_PER_RUN) * (ITERATIONS);                                              \
+    double nanos       = (duration + work - 1) / (double)work;                                       \
+    printf("%10g ns %2dx %s\n", nanos, (ITERATIONS), #CODE);                                         \
+  } while (0)
 
-void
-object_test()
+void ObjectTest()
 {
-    flat::FixedArray<char, 1024> output;
-    if (flat::WriteJson(flat::JsonObject({ { "content", "hello" } }), output) != Json::SUCCESS ||
-        strcmp(output.data, "{\"content\":\"hello\"}"))
-        exit(1);
+  FixedArray<char, 1024> output;
+  if (WriteJSON(ObjectValue({{"content", "hello"}}), output) != SUCCESS || strcmp(output.data, "{\"content\":\"hello\"}"))
+    exit(1);
 }
 
-void
-direct_serialization_test()
+void DirectSerializationTest()
 {
-    char output[1024];
-    if (flat::WriteJson(flat::JsonObject({ { "answer", 42 } }), output) != Json::SUCCESS)
-        exit(17);
-    if (strcmp(output, "{\"answer\":42}"))
-        exit(18);
+  char output[1024];
+  if (WriteJSON(ObjectValue({{"answer", 42}}), output) != SUCCESS)
+    exit(17);
+  if (strcmp(output, "{\"answer\":42}"))
+    exit(18);
 
-    char round_trip_output[1024];
-    if (flat::WriteJson(
-          flat::JsonObject({ { "model", "gpt-5" }, { "stream", true } }),
-          round_trip_output) != Json::SUCCESS)
-        exit(40);
-    if (strcmp(round_trip_output, "{\"model\":\"gpt-5\",\"stream\":true}"))
-        exit(41);
+  char roundTripOutput[1024];
+  if (WriteJSON(ObjectValue({{"model", "gpt-5"}, {"stream", true}}), roundTripOutput) != SUCCESS)
+    exit(40);
+  if (strcmp(roundTripOutput, "{\"model\":\"gpt-5\",\"stream\":true}"))
+    exit(41);
 
-    flat::FixedJsonBuffer<512> parse_arena;
-    Json::Status status = Json::Parse(round_trip_output, strlen(round_trip_output), &parse_arena);
-    if (status != Json::SUCCESS)
-        exit(44);
-    const Json* pJson = parse_arena.pRoot;
-    flat::String model = (*pJson)["model"].GetString();
-    if (model.size != 5 || strcmp(model.data, "gpt-5") || !(*pJson)["stream"].GetBool())
-        exit(44);
-    char parsed_output[1024];
-    if (flat::WriteJson(*pJson, parsed_output) != Json::SUCCESS)
-        exit(45);
-    if (strcmp(parsed_output, round_trip_output))
-        exit(45);
+  FixedArena<512> parseArenaStorage;
+  Arena parseArena     = parseArenaStorage;
+  const Node* parseArenaRoot = nullptr;
+  Result status        = ParseJSON(roundTripOutput, strlen(roundTripOutput), &parseArena, &parseArenaRoot);
+  if (status != SUCCESS)
+    exit(44);
+  const Node* pJson  = parseArenaRoot;
+  String model = (*pJson)["model"].GetString();
+  if (model.size != 5 || strcmp(model.data, "gpt-5") || !(*pJson)["stream"].GetBool())
+    exit(44);
+  char parsedOutput[1024];
+  if (WriteJSON(*pJson, parsedOutput) != SUCCESS)
+    exit(45);
+  if (strcmp(parsedOutput, roundTripOutput))
+    exit(45);
 
-    char small_output[5];
-    if (flat::WriteJson(flat::JsonObject({ { "too", "large" } }), small_output) != Json::INSUFFICIENT_SPACE)
-        exit(53);
-    if (flat::WriteJson(flat::JsonValue(nullptr), small_output) != Json::SUCCESS ||
-        strcmp(small_output, "null"))
-        exit(54);
+  char smallOutput[5];
+  if (WriteJSON(ObjectValue({{"too", "large"}}), smallOutput) != ERROR_INSUFFICIENT_SPACE)
+    exit(53);
+  if (WriteJSON(Value(nullptr), smallOutput) != SUCCESS || strcmp(smallOutput, "null"))
+    exit(54);
 }
 
-void
-public_soft_failure_test()
+void PublicSoftFailureTest()
 {
-    flat::FixedJsonBuffer<64> arena;
+  FixedArena<64> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
 
-    if (Json::Parse("null", (flat::FixedJsonBuffer<64>*)nullptr) != Json::INVALID_ARGUMENT)
-        exit(200);
-    if (Json::Parse((const char*)nullptr, 1, &arena) != Json::INVALID_ARGUMENT || arena.pRoot)
-        exit(202);
-    if (Json::Parse((const char*)nullptr, 0, &arena) != Json::ABSENT_VALUE || arena.pRoot)
-        exit(203);
-    Json::Status smallArenaStatus = Json::Parse("1.00000000000000011102230246251565404236316680908203125", &arena);
-    if (smallArenaStatus != Json::INSUFFICIENT_SPACE || arena.pRoot) {
-        fprintf(stderr, "small numeric arena returned %s\n", Json::StatusToString(smallArenaStatus));
-        exit(210);
-    }
-    if (Json::Parse("null", &arena) != Json::SUCCESS || !arena.pRoot || !arena->IsNull())
-        exit(211);
+  if (ParseJSON("null", (Arena*)nullptr, &arenaRoot) != ERROR_INVALID_ARGUMENT)
+    exit(200);
+  if (ParseJSON((const char*)nullptr, 1, &arena, &arenaRoot) != ERROR_INVALID_ARGUMENT || arenaRoot)
+    exit(202);
+  if (ParseJSON((const char*)nullptr, 0, &arena, &arenaRoot) != ABSENT_VALUE || arenaRoot)
+    exit(203);
+  Result smallArenaStatus = ParseJSON("1.00000000000000011102230246251565404236316680908203125", &arena, &arenaRoot);
+  if (smallArenaStatus != SUCCESS || !arenaRoot || !arenaRoot->IsDouble()) {
+    fprintf(stderr, "small numeric arena returned %s\n", string_Result(smallArenaStatus));
+    exit(210);
+  }
+  arena     = arenaStorage;
+  arenaRoot = nullptr;
+  if (ParseJSON("null", &arena, &arenaRoot) != SUCCESS || !arenaRoot || !arenaRoot->IsNull())
+    exit(211);
 
-    flat::FixedJsonBuffer<24> insufficientStringArena;
-    if (Json::Parse(R"("123456789")", &insufficientStringArena) != Json::INSUFFICIENT_SPACE || insufficientStringArena.pRoot)
-        exit(212);
-    flat::FixedJsonBuffer<40> insufficientEscapeArena;
-    if (Json::Parse(R"("\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061")",
-                    &insufficientEscapeArena) != Json::INSUFFICIENT_SPACE || insufficientEscapeArena.pRoot)
-        exit(213);
-    flat::FixedJsonBuffer<31> insufficientArrayArena;
-    if (Json::Parse("[0]", &insufficientArrayArena) != Json::INSUFFICIENT_SPACE || insufficientArrayArena.pRoot)
-        exit(214);
-    flat::FixedJsonBuffer<64> insufficientObjectArena;
-    if (Json::Parse(R"({"a":0})", &insufficientObjectArena) != Json::INSUFFICIENT_SPACE || insufficientObjectArena.pRoot)
-        exit(215);
+  FixedArena<24> insufficientStringArenaStorage;
+  Arena insufficientStringArena     = insufficientStringArenaStorage;
+  const Node* insufficientStringArenaRoot = nullptr;
+  if (ParseJSON(R"("123456789")", &insufficientStringArena, &insufficientStringArenaRoot) != ERROR_INSUFFICIENT_SPACE || insufficientStringArenaRoot)
+    exit(212);
+  FixedArena<40> insufficientEscapeArenaStorage;
+  Arena insufficientEscapeArena     = insufficientEscapeArenaStorage;
+  const Node* insufficientEscapeArenaRoot = nullptr;
+  if (ParseJSON(R"("\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061\u0061")",
+                  &insufficientEscapeArena, &insufficientEscapeArenaRoot) != ERROR_INSUFFICIENT_SPACE ||
+      insufficientEscapeArenaRoot)
+    exit(213);
+  FixedArena<31> insufficientArrayArenaStorage;
+  Arena insufficientArrayArena     = insufficientArrayArenaStorage;
+  const Node* insufficientArrayArenaRoot = nullptr;
+  if (ParseJSON("[0]", &insufficientArrayArena, &insufficientArrayArenaRoot) != ERROR_INSUFFICIENT_SPACE || insufficientArrayArenaRoot)
+    exit(214);
+  FixedArena<64> insufficientObjectArenaStorage;
+  Arena insufficientObjectArena     = insufficientObjectArenaStorage;
+  const Node* insufficientObjectArenaRoot = nullptr;
+  if (ParseJSON(R"({"a":0})", &insufficientObjectArena, &insufficientObjectArenaRoot) != ERROR_INSUFFICIENT_SPACE || insufficientObjectArenaRoot)
+    exit(215);
 
-    if (Json::Parse(flat::FileMap("bin/file-does-not-exist.json"), &arena) != Json::ABSENT_VALUE || arena.pRoot)
-        exit(207);
-    flat::FileMap invalidInput(nullptr);
-    if (invalidInput.IsValid())
-        exit(209);
-    flat::WritableFile invalidFile("bin/missing/file.json");
-    if (invalidFile.IsValid())
-        exit(217);
-    flat::WritableFileMap invalidOutput(4, "bin/missing/file-not-created.json");
-    if (invalidOutput.IsValid())
-        exit(216);
-
+  if (ParseJSON(FileMap("bin/file-does-not-exist.json"), &arena, &arenaRoot) != ABSENT_VALUE || arenaRoot)
+    exit(207);
+  FileMap invalidInput(nullptr);
+  if (invalidInput.IsValid())
+    exit(209);
+  WritableFile invalidFile("bin/missing/file.json");
+  if (invalidFile.IsValid())
+    exit(217);
+  WritableFileMap invalidOutput(4, "bin/missing/file-not-created.json");
+  if (invalidOutput.IsValid())
+    exit(216);
 }
 
-void
-file_map_round_trip_test()
+void FileMapRoundTripTest()
 {
-    static constexpr char Path[] = "file_map_round_trip_test.json";
-    static constexpr char Expected[] = "{\"model\":\"gpt-5\",\"stream\":true,\"number\":3.14,\"escaped\":\"line\\n\"}";
+  static constexpr char Path[]     = "file_map_round_trip_test.json";
+  static constexpr char Expected[] = "{\"model\":\"gpt-5\",\"stream\":true,\"number\":3.14,\"escaped\":\"line\\n\"}";
 
-    {
-        flat::WritableFileMap output(4, Path);
-        if (!output.IsValid())
-            exit(83);
-        memcpy(output.data, "null", 4);
-    }
-    {
-        flat::FileMap input(Path);
-        if (!input.IsValid() || input.size != 4 || memcmp(input.data, "null", 4))
-            exit(84);
-    }
+  {
+    WritableFileMap output(4, Path);
+    if (!output.IsValid())
+      exit(83);
+    memcpy(output.data, "null", 4);
+  }
+  {
+    FileMap input(Path);
+    if (!input.IsValid() || input.size != 4 || memcmp(input.data, "null", 4))
+      exit(84);
+  }
 
-    char text[4096];
-    if (flat::WriteJson(
-          flat::JsonObject({ { "model", "gpt-5" }, { "stream", true }, { "number", 3.14 }, { "escaped", "line\n" } }),
-          text) != Json::SUCCESS || !write_text_file(Path, text))
-        exit(80);
+  char text[4096];
+  if (WriteJSON(ObjectValue({{"model", "gpt-5"}, {"stream", true}, {"number", 3.14}, {"escaped", "line\n"}}), text) != SUCCESS || !WriteTextFile(Path, text))
+    exit(80);
 
-    {
-        flat::FileMap input(Path);
-        if (!input.IsValid() || input.size != sizeof(Expected) - 1 ||
-            memcmp(input.data, Expected, input.size))
-            exit(81);
-    }
+  {
+    FileMap input(Path);
+    if (!input.IsValid() || input.size != sizeof(Expected) - 1 || memcmp(input.data, Expected, input.size))
+      exit(81);
+  }
 
-    flat::FixedJsonBuffer<512> arena;
-    if (Json::Parse(flat::FileMap(Path), &arena) != Json::SUCCESS)
-        exit(82);
-    const Json* pJson = arena.pRoot;
-    flat::String model = (*pJson)["model"].GetString();
-    if (model.size != 5 || strcmp(model.data, "gpt-5") || !(*pJson)["stream"].GetBool() ||
-        (*pJson)["number"].GetDouble() != 3.14 || strcmp((*pJson)["escaped"].GetString().data, "line\n"))
-        exit(82);
-    unlink(Path);
+  FixedArena<512> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(FileMap(Path), &arena, &arenaRoot) != SUCCESS)
+    exit(82);
+  const Node* pJson  = arenaRoot;
+  String model = (*pJson)["model"].GetString();
+  if (model.size != 5 || strcmp(model.data, "gpt-5") || !(*pJson)["stream"].GetBool() || (*pJson)["number"].GetDouble() != 3.14 || strcmp((*pJson)["escaped"].GetString().data, "line\n"))
+    exit(82);
+  unlink(Path);
 }
 
-void
-writable_file_round_trip_test()
+void WritableFileRoundTripTest()
 {
-    static constexpr char Path[] = "writable_file_round_trip_test.json";
-    static constexpr char Text[] = R"({"name":"flat-json","enabled":true,"values":[-1,0,42,3.5],"nested":{"escaped":"line\n","none":null}})";
+  static constexpr char Path[] = "writable_file_round_trip_test.json";
+  static constexpr char Text[] = R"({"name":"flat-json","enabled":true,"values":[-1,0,42,3.5],"nested":{"escaped":"line\n","none":null}})";
 
-    flat::FixedJsonBuffer<2048> sourceArena;
-    if (Json::Parse(Text, &sourceArena) != Json::SUCCESS)
-        exit(219);
+  FixedArena<2048> sourceArenaStorage;
+  Arena sourceArena     = sourceArenaStorage;
+  const Node* sourceArenaRoot = nullptr;
+  if (ParseJSON(Text, &sourceArena, &sourceArenaRoot) != SUCCESS)
+    exit(219);
 
-    char text[4096];
-    if (flat::WriteJson(*sourceArena.pRoot, text) != Json::SUCCESS || !write_text_file(Path, text))
-        exit(220);
+  char text[4096];
+  if (WriteJSON(*sourceArenaRoot, text) != SUCCESS || !WriteTextFile(Path, text))
+    exit(220);
 
-    {
-        flat::FileMap input(Path);
-        if (!input.IsValid() || input.size != sizeof(Text) - 1 || memcmp(input.data, Text, input.size))
-            exit(221);
-    }
+  {
+    FileMap input(Path);
+    if (!input.IsValid() || input.size != sizeof(Text) - 1 || memcmp(input.data, Text, input.size))
+      exit(221);
+  }
 
-    flat::FixedJsonBuffer<2048> destinationArena;
-    if (Json::Parse(flat::FileMap(Path), &destinationArena) != Json::SUCCESS)
-        exit(222);
-    const Json* pJson = destinationArena.pRoot;
-    if (strcmp((*pJson)["name"].GetString().data, "flat-json") ||
-        !(*pJson)["enabled"].GetBool() ||
-        (*pJson)["values"][0].GetLong() != -1 ||
-        (*pJson)["values"][2].GetLong() != 42 ||
-        (*pJson)["values"][3].GetDouble() != 3.5 ||
-        strcmp((*pJson)["nested"]["escaped"].GetString().data, "line\n") ||
-        !(*pJson)["nested"]["none"].IsNull())
-        exit(223);
+  FixedArena<2048> destinationArenaStorage;
+  Arena destinationArena     = destinationArenaStorage;
+  const Node* destinationArenaRoot = nullptr;
+  if (ParseJSON(FileMap(Path), &destinationArena, &destinationArenaRoot) != SUCCESS)
+    exit(222);
+  const Node* pJson = destinationArenaRoot;
+  if (strcmp((*pJson)["name"].GetString().data, "flat-json") || !(*pJson)["enabled"].GetBool() || (*pJson)["values"][0].GetLong() != -1 || (*pJson)["values"][2].GetLong() != 42 ||
+      (*pJson)["values"][3].GetDouble() != 3.5 || strcmp((*pJson)["nested"]["escaped"].GetString().data, "line\n") || !(*pJson)["nested"]["none"].IsNull())
+    exit(223);
 
-    char pJsonText[4096];
-    if (flat::WriteJson(*pJson, pJsonText) != Json::SUCCESS || strcmp(pJsonText, Text))
-        exit(224);
-    unlink(Path);
+  char pJsonText[4096];
+  if (WriteJSON(*pJson, pJsonText) != SUCCESS || strcmp(pJsonText, Text))
+    exit(224);
+  unlink(Path);
 }
 
-void
-large_object_index_test()
+void LargeObjectIndexTest()
 {
+  char text[8192];
+  char* pCursor = text;
+  *pCursor++    = '{';
+  for (int key = 100; key >= 0; --key) {
+    size_t remaining = sizeof(text) - (size_t)(pCursor - text);
+    int count        = snprintf(pCursor, remaining, "%s\"key%03d\":%d", key == 100 ? "" : ",", key, key);
+    if (count < 0 || (size_t)count >= remaining)
+      exit(55);
+    pCursor += count;
+  }
+  *pCursor++ = '}';
+  *pCursor   = '\0';
+
+  FixedArena<32768> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(text, strlen(text), &arena, &arenaRoot) != SUCCESS)
+    exit(55);
+  const Node* pJson = arenaRoot;
+  if (pJson->GetSize() != 101 || !pJson->Contains("key100") || !pJson->Contains("key000") || pJson->Contains("missing") || !pJson->HasKey("key100") || !pJson->HasKey("key000") ||
+      pJson->HasKey("missing") || (*pJson)["key100"].GetLong() != 100 || (*pJson)["key050"].GetLong() != 50 || (*pJson)["key000"].GetLong() != 0)
+    exit(55);
+
+  char output[8192];
+  if (pJson->ToString(output) != SUCCESS || strcmp(output, text))
+    exit(56);
+}
+
+void MediumObjectLookupTest()
+{
+  char text[2048];
+  char* pCursor = text;
+  *pCursor++    = '{';
+  for (int key = 0; key < 32; ++key) {
+    size_t remaining = sizeof(text) - (size_t)(pCursor - text);
+    int count        = snprintf(pCursor, remaining, "%s\"key%02d\":%d", key ? "," : "", key, key);
+    if (count < 0 || (size_t)count >= remaining)
+      exit(223);
+    pCursor += count;
+  }
+  memcpy(pCursor, ",\"target\":31337}", sizeof(",\"target\":31337}"));
+
+  FixedArena<8192> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(text, strlen(text), &arena, &arenaRoot) != SUCCESS)
+    exit(224);
+  const Node* pJson = arenaRoot;
+  if ((*pJson)["key00"].GetLong() != 0 || (*pJson)["key15"].GetLong() != 15 || (*pJson)["key31"].GetLong() != 31 || (*pJson)["target"].GetLong() != 31337 || pJson->Contains("missing"))
+    exit(225);
+}
+
+static uint64_t DoubleBits(double value)
+{
+  uint64_t bits;
+  memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+void NumericArenaTest()
+{
+  static constexpr char FilePath[] = "numeric_file_output_test.json";
+  static const double values[]     = {
+      0.0,      -0.0,      0.1, 1e-7, 1e-6, 1e20, 1e21, DBL_MIN, DBL_MAX, 4.9406564584124654e-324, 2.2250738585072014e-308, 9007199254740991.0, 3.5844466002796428e+298, 1.7039356390957979e-287,
+      INFINITY, -INFINITY,
+  };
+
+  for (size_t i = 0; i < ARRAYLEN(values); ++i) {
     char text[8192];
-    char* pCursor = text;
-    *pCursor++ = '{';
-    for (int key = 100; key >= 0; --key) {
-        size_t remaining = sizeof(text) - (size_t)(pCursor - text);
-        int count = snprintf(pCursor, remaining, "%s\"key%03d\":%d", key == 100 ? "" : ",", key, key);
-        if (count < 0 || (size_t)count >= remaining)
-            exit(55);
-        pCursor += count;
-    }
-    *pCursor++ = '}';
-    *pCursor = '\0';
+    if (WriteJSON(values[i], text) != SUCCESS)
+      exit(27);
 
-    flat::FixedJsonBuffer<32768> arena;
-    if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
-        exit(55);
-    const Json* pJson = arena.pRoot;
-    if (pJson->GetSize() != 101 ||
-        !pJson->Contains("key100") ||
-        !pJson->Contains("key000") ||
-        pJson->Contains("missing") ||
-        !pJson->HasKey("key100") ||
-        !pJson->HasKey("key000") ||
-        pJson->HasKey("missing") ||
-        (*pJson)["key100"].GetLong() != 100 ||
-        (*pJson)["key050"].GetLong() != 50 ||
-        (*pJson)["key000"].GetLong() != 0)
-        exit(55);
+    FixedArena<8192> parseArenaStorage;
+    Arena parseArena     = parseArenaStorage;
+    const Node* parseArenaRoot = nullptr;
+    Result status        = ParseJSON(text, strlen(text), &parseArena, &parseArenaRoot);
+    if (status != SUCCESS)
+      exit(28);
+    const Node* pJson = parseArenaRoot;
+    double expected   = values[i] == 0.0 ? 0.0 : values[i];
+    if (DoubleBits(pJson->GetNumber()) != DoubleBits(expected))
+      exit(29);
 
-    char output[8192];
-    if (pJson->ToString(output) != Json::SUCCESS || strcmp(output, text))
-        exit(56);
+    if (!WriteTextFile(FilePath, text))
+      exit(31);
+    FileMap file(FilePath);
+    if (!file.IsValid() || file.size != strlen(text) || memcmp(file.data, text, file.size))
+      exit(32);
+  }
+
+  char special[4096];
+  if (WriteJSON(ArrayValue({NAN, INFINITY, -INFINITY, 1.25f}), special) != SUCCESS)
+    exit(30);
+  if (strcmp(special, "[null,1e5000,-1e5000,1.25]"))
+    exit(30);
+
+  char minimum[32];
+  if (WriteJSON(LLONG_MIN, minimum) != SUCCESS || !WriteTextFile(FilePath, minimum))
+    exit(33);
+  {
+    FileMap file(FilePath);
+    if (!file.IsValid() || file.size != 20 || memcmp(file.data, "-9223372036854775808", 20))
+      exit(34);
+  }
+  unlink(FilePath);
 }
 
-void
-medium_object_lookup_test()
+void FastDecimalDifferentialTest()
 {
-    char text[2048];
-    char* pCursor = text;
-    *pCursor++ = '{';
-    for (int key = 0; key < 32; ++key) {
-        size_t remaining = sizeof(text) - (size_t)(pCursor - text);
-        int count = snprintf(pCursor, remaining, "%s\"key%02d\":%d", key ? "," : "", key, key);
-        if (count < 0 || (size_t)count >= remaining)
-            exit(223);
-        pCursor += count;
-    }
-    memcpy(pCursor, ",\"target\":31337}", sizeof(",\"target\":31337}"));
+  static const uint64_t boundaries[] = {
+      1, 5, 9, 123456789, (1ull << 53) - 1, 1ull << 53, 9999999999999999999ull,
+  };
 
-    flat::FixedJsonBuffer<8192> arena;
-    if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS)
-        exit(224);
-    const Json* pJson = arena.pRoot;
-    if ((*pJson)["key00"].GetLong() != 0 ||
-        (*pJson)["key15"].GetLong() != 15 ||
-        (*pJson)["key31"].GetLong() != 31 ||
-        (*pJson)["target"].GetLong() != 31337 ||
-        pJson->Contains("missing"))
-        exit(225);
+  uint64_t random = 0x9e3779b97f4a7c15ull;
+  for (int exponent = -64; exponent <= 38; ++exponent) {
+    for (size_t index = 0; index < ARRAYLEN(boundaries) + 16; ++index) {
+      uint64_t significand;
+      if (index < ARRAYLEN(boundaries)) {
+        significand = boundaries[index];
+      } else {
+        random      = random * 6364136223846793005ull + 1442695040888963407ull;
+        significand = random % 9999999999999999999ull + 1;
+      }
+      char text[64];
+      int size = snprintf(text, sizeof(text), "%llue%d", (unsigned long long)significand, exponent);
+      char* pConvertedEnd;
+      double expected = strtod(text, &pConvertedEnd);
+      if (pConvertedEnd != text + size)
+        exit(31);
+
+      FixedArena<512> arenaStorage;
+      Arena arena     = arenaStorage;
+      const Node* arenaRoot = nullptr;
+      if (ParseJSON(text, size, &arena, &arenaRoot) != SUCCESS || DoubleBits(arenaRoot->GetDouble()) != DoubleBits(expected))
+        exit(32);
+    }
+  }
 }
 
-static uint64_t
-DoubleBits(double value)
+void StrictStringTest()
 {
-    uint64_t bits;
-    memcpy(&bits, &value, sizeof(bits));
-    return bits;
+  struct Input {
+    const char* data;
+    size_t size;
+  };
+  static const Input invalid[] = {
+      {STRING("[\"\\x00\"]")},    {STRING("[\"a\0a\"]")},         {STRING("[\"new\nline\"]")},        {STRING("[\"\t\"]")},       {STRING("[\"\x80\"]")},
+      {STRING("[\"\xc0\x80\"]")}, {STRING("[\"\xed\xa0\x80\"]")}, {STRING("[\"\xf4\x90\x80\x80\"]")}, {STRING("[\"\xe2\x82\"]")},
+  };
+
+  for (size_t i = 0; i < ARRAYLEN(invalid); ++i) {
+    FixedArena<1024> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    if (ParseJSON(invalid[i].data, invalid[i].size, &arena, &arenaRoot) != ERROR_MALFORMED || arenaRoot)
+      exit(31);
+  }
+
+  static const Input valid[] = {
+      {STRING("[\"\\u0000\"]")},
+      {STRING("[\"\\b\\f\\n\\r\\t\"]")},
+      {STRING("[\"\xc2\x80\xe0\xa0\x80\xf0\x90\x80\x80\xf4\x8f\xbf\xbf\"]")},
+      // Preserve the implementation-defined unmatched-surrogate behavior
+      // recorded in README.md.
+      {STRING("[\"\\uD800\"]")},
+  };
+  static const size_t validSizes[] = {1, 5, 13, 6};
+  for (size_t i = 0; i < ARRAYLEN(valid); ++i) {
+    FixedArena<1024> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    if (ParseJSON(valid[i].data, valid[i].size, &arena, &arenaRoot) != SUCCESS)
+      exit(32);
+    const Node* pJson   = arenaRoot;
+    String string = (*pJson)[0].GetString();
+    if (string.size != validSizes[i] || string[string.size] != '\0')
+      exit(60);
+  }
 }
 
-void
-numeric_arena_test()
+static uint64_t FuzzRandom(uint64_t& state)
 {
-    static constexpr char FilePath[] = "numeric_file_output_test.json";
-    static const double values[] = {
-        0.0,
-        -0.0,
-        0.1,
-        1e-7,
-        1e-6,
-        1e20,
-        1e21,
-        DBL_MIN,
-        DBL_MAX,
-        4.9406564584124654e-324,
-        2.2250738585072014e-308,
-        9007199254740991.0,
-        3.5844466002796428e+298,
-        1.7039356390957979e-287,
-        INFINITY,
-        -INFINITY,
-    };
-    for (size_t i = 0; i < ARRAYLEN(values); ++i) {
-        char text[8192];
-        if (flat::WriteJson(values[i], text) != Json::SUCCESS)
-            exit(27);
-
-        flat::FixedJsonBuffer<8192> parse_arena;
-        Json::Status status = Json::Parse(text, strlen(text), &parse_arena);
-        if (status != Json::SUCCESS)
-            exit(28);
-        const Json* pJson = parse_arena.pRoot;
-        double expected = values[i] == 0.0 ? 0.0 : values[i];
-        if (DoubleBits(pJson->GetNumber()) != DoubleBits(expected))
-            exit(29);
-
-        if (!write_text_file(FilePath, text))
-            exit(31);
-        flat::FileMap file(FilePath);
-        if (!file.IsValid() || file.size != strlen(text) || memcmp(file.data, text, file.size))
-            exit(32);
-    }
-
-    char special[4096];
-    if (flat::WriteJson(
-          flat::JsonArray({ NAN, INFINITY, -INFINITY, 1.25f }),
-          special) != Json::SUCCESS)
-        exit(30);
-    if (strcmp(special, "[null,1e5000,-1e5000,1.25]"))
-        exit(30);
-
-    char minimum[32];
-    if (flat::WriteJson(LLONG_MIN, minimum) != Json::SUCCESS || !write_text_file(FilePath, minimum))
-        exit(33);
-    {
-        flat::FileMap file(FilePath);
-        if (!file.IsValid() || file.size != 20 || memcmp(file.data, "-9223372036854775808", 20))
-            exit(34);
-    }
-    unlink(FilePath);
+  state ^= state >> 12;
+  state ^= state << 25;
+  state ^= state >> 27;
+  return state * 2685821657736338717ull;
 }
 
-void
-fast_decimal_differential_test()
-{
-    static const uint64_t boundaries[] = {
-        1,
-        5,
-        9,
-        123456789,
-        (1ull << 53) - 1,
-        1ull << 53,
-        9999999999999999999ull,
-    };
-    uint64_t random = 0x9e3779b97f4a7c15ull;
-    for (int exponent = -64; exponent <= 38; ++exponent) {
-        for (size_t index = 0; index < ARRAYLEN(boundaries) + 16; ++index) {
-            uint64_t significand;
-            if (index < ARRAYLEN(boundaries)) {
-                significand = boundaries[index];
-            } else {
-                random = random * 6364136223846793005ull + 1442695040888963407ull;
-                significand = random % 9999999999999999999ull + 1;
-            }
-            char text[64];
-            int size = snprintf(text, sizeof(text), "%llue%d",
-                                (unsigned long long)significand, exponent);
-            char* pConvertedEnd;
-            double expected = strtod(text, &pConvertedEnd);
-            if (pConvertedEnd != text + size)
-                exit(31);
+struct FuzzText {
+  char* pData;
+  size_t capacity;
+  size_t size = 0;
 
-            flat::FixedJsonBuffer<512> arena;
-            if (Json::Parse(text, size, &arena) != Json::SUCCESS ||
-                DoubleBits(arena->GetDouble()) != DoubleBits(expected))
-                exit(32);
-        }
-    }
-}
+  bool Add(char value)
+  {
+    if (size == capacity)
+      return false;
+    pData[size++] = value;
+    return true;
+  }
 
-void
-strict_string_test()
-{
-    struct Input {
-        const char* data;
-        size_t size;
-    };
-    static const Input invalid[] = {
-        { STRING("[\"\\x00\"]") },
-        { STRING("[\"a\0a\"]") },
-        { STRING("[\"new\nline\"]") },
-        { STRING("[\"\t\"]") },
-        { STRING("[\"\x80\"]") },
-        { STRING("[\"\xc0\x80\"]") },
-        { STRING("[\"\xed\xa0\x80\"]") },
-        { STRING("[\"\xf4\x90\x80\x80\"]") },
-        { STRING("[\"\xe2\x82\"]") },
-    };
-    for (size_t i = 0; i < ARRAYLEN(invalid); ++i) {
-        flat::FixedJsonBuffer<1024> arena;
-        if (Json::Parse(invalid[i].data, invalid[i].size, &arena) != Json::MALFORMED || arena.pRoot)
-            exit(31);
-    }
+  bool Append(const char* pSource, size_t count)
+  {
+    if (count > capacity - size)
+      return false;
+    memcpy(pData + size, pSource, count);
+    size += count;
+    return true;
+  }
 
-    static const Input valid[] = {
-        { STRING("[\"\\u0000\"]") },
-        { STRING("[\"\\b\\f\\n\\r\\t\"]") },
-        { STRING("[\"\xc2\x80\xe0\xa0\x80\xf0\x90\x80\x80\xf4\x8f\xbf\xbf\"]") },
-        // Preserve the implementation-defined unmatched-surrogate behavior
-        // recorded in README.md.
-        { STRING("[\"\\uD800\"]") },
-    };
-    static const size_t valid_sizes[] = { 1, 5, 13, 6 };
-    for (size_t i = 0; i < ARRAYLEN(valid); ++i) {
-        flat::FixedJsonBuffer<1024> arena;
-        if (Json::Parse(valid[i].data, valid[i].size, &arena) != Json::SUCCESS)
-            exit(32);
-        const Json* pJson = arena.pRoot;
-        flat::String string = (*pJson)[0].GetString();
-        if (string.size != valid_sizes[i] || string[string.size] != '\0')
-            exit(60);
-    }
-}
-
-static uint64_t
-fuzz_random(uint64_t& state)
-{
-    state ^= state >> 12;
-    state ^= state << 25;
-    state ^= state >> 27;
-    return state * 2685821657736338717ull;
-}
-
-struct FuzzText
-{
-    char* pData;
-    size_t capacity;
-    size_t size = 0;
-
-    bool Add(char value)
-    {
-        if (size == capacity)
-            return false;
-        pData[size++] = value;
-        return true;
-    }
-
-    bool Append(const char* pSource, size_t count)
-    {
-        if (count > capacity - size)
-            return false;
-        memcpy(pData + size, pSource, count);
-        size += count;
-        return true;
-    }
-
-    template<size_t Size> bool Append(const char (&text)[Size]) { return Append(text, Size - 1); }
+  template <size_t Size>
+  bool Append(const char (&text)[Size]) { return Append(text, Size - 1); }
 };
 
-static bool
-generate_json_value(FuzzText& text, uint64_t& random, int depth)
+static bool GenerateJsonValue(FuzzText& text, uint64_t& random, int depth)
 {
-    static const char* const numbers[] = {
-        "0", "-0", "1", "-1", "2147483647", "-2147483648",
-        "0.0", "-0.0", "0.1", "1e-20", "3.4028235e38",
-        "9223372036854775807", "-9223372036854775808",
-        "4.9406564584124654e-324", "1.7976931348623157e308",
-    };
-    static const char* const strings[] = {
-        R"("")",
-        R"("ASCII")",
-        R"("quote\"slash\\line\n\t")",
-        R"("\u0000\u001f")",
-        R"("\u03c0\u20ac\uD834\uDD1E")",
-        "\"caf\xc3\xa9\"",
-    };
-    static const char* const keys[] = {
-        R"("a")", R"("")", R"("escaped\nkey")", R"("\u03c0")", R"("duplicate")",
-    };
+  static const char* const numbers[] = {
+      "0",
+      "-0",
+      "1",
+      "-1",
+      "2147483647",
+      "-2147483648",
+      "0.0",
+      "-0.0",
+      "0.1",
+      "1e-20",
+      "3.4028235e38",
+      "9223372036854775807",
+      "-9223372036854775808",
+      "4.9406564584124654e-324",
+      "1.7976931348623157e308",
+  };
+  static const char* const strings[] = {
+      R"("")", R"("ASCII")", R"("quote\"slash\\line\n\t")", R"("\u0000\u001f")", R"("\u03c0\u20ac\uD834\uDD1E")", "\"caf\xc3\xa9\"",
+  };
+  static const char* const keys[] = {
+      R"("a")", R"("")", R"("escaped\nkey")", R"("\u03c0")", R"("duplicate")",
+  };
 
-    uint64_t choice = fuzz_random(random) % (depth ? 8 : 6);
-    switch (choice)
-    {
-        case 0:
-            return text.Append("null");
-        case 1: {
-            bool value = fuzz_random(random) & 1;
-            return text.Append(value ? "true" : "false", value ? 4 : 5);
-        }
-        case 2: {
-            const char* pNumber = numbers[fuzz_random(random) % ARRAYLEN(numbers)];
-            return text.Append(pNumber, strlen(pNumber));
-        }
-        case 3: {
-            const char* pString = strings[fuzz_random(random) % ARRAYLEN(strings)];
-            return text.Append(pString, strlen(pString));
-        }
-        case 4: {
-            long long value = (long long)(fuzz_random(random) % 2000000001ull) - 1000000000ll;
-            char number[32];
-            int size = snprintf(number, sizeof(number), "%lld", value);
-            return size > 0 && (size_t)size < sizeof(number) && text.Append(number, (size_t)size);
-        }
-        case 5:
-            return text.Append(fuzz_random(random) & 1 ? "[]" : "{}", 2);
-        case 6: {
-            if (!text.Add('['))
-                return false;
-            size_t count = fuzz_random(random) % 4;
-            for (size_t i = 0; i < count; ++i) {
-                if ((i && !text.Add(',')) || !generate_json_value(text, random, depth - 1))
-                    return false;
-            }
-            return text.Add(']');
-        }
-        default: {
-            if (!text.Add('{'))
-                return false;
-            size_t count = fuzz_random(random) % 4;
-            for (size_t i = 0; i < count; ++i) {
-                const char* pKey = keys[fuzz_random(random) % ARRAYLEN(keys)];
-                if ((i && !text.Add(',')) || !text.Append(pKey, strlen(pKey)) ||
-                    !text.Add(':') || !generate_json_value(text, random, depth - 1))
-                    return false;
-            }
-            return text.Add('}');
-        }
+  uint64_t choice = FuzzRandom(random) % (depth ? 8 : 6);
+  switch (choice)
+  {
+    case 0:
+      return text.Append("null");
+    case 1: {
+      bool value = FuzzRandom(random) & 1;
+      return text.Append(value ? "true" : "false", value ? 4 : 5);
     }
-}
-
-static bool
-canonicalize_if_accepted(const char* pData, size_t size, char* pCanonical, size_t capacity)
-{
-    flat::FixedJsonBuffer<128 * 1024> first;
-    Json::Status status = Json::Parse(pData, size, &first);
-    if (status != Json::SUCCESS) {
-        if (status != Json::MALFORMED && status != Json::ABSENT_VALUE)
-            exit(301);
+    case 2: {
+      const char* pNumber = numbers[FuzzRandom(random) % ARRAYLEN(numbers)];
+      return text.Append(pNumber, strlen(pNumber));
+    }
+    case 3: {
+      const char* pString = strings[FuzzRandom(random) % ARRAYLEN(strings)];
+      return text.Append(pString, strlen(pString));
+    }
+    case 4: {
+      long long value = (long long)(FuzzRandom(random) % 2000000001ull) - 1000000000ll;
+      char number[32];
+      int size = snprintf(number, sizeof(number), "%lld", value);
+      return size > 0 && (size_t)size < sizeof(number) && text.Append(number, (size_t)size);
+    }
+    case 5:
+      return text.Append(FuzzRandom(random) & 1 ? "[]" : "{}", 2);
+    case 6: {
+      if (!text.Add('['))
         return false;
+      size_t count = FuzzRandom(random) % 4;
+      for (size_t i = 0; i < count; ++i) {
+        if ((i && !text.Add(',')) || !GenerateJsonValue(text, random, depth - 1))
+          return false;
+      }
+      return text.Add(']');
     }
-    if (first->ToString(flat::Span<char>(capacity, pCanonical)) != Json::SUCCESS)
-        exit(302);
-
-    size_t estimate = Json::EstimateSize(pData, size);
-    flat::FixedJsonBuffer<256 * 1024> estimated;
-    if (estimate == SIZE_MAX || estimate > sizeof(estimated.bytes))
-        exit(303);
-    estimated.back = estimate;
-    if (Json::Parse(pData, size, &estimated) != Json::SUCCESS)
-        exit(304);
-
-    char pretty[32 * 1024];
-    if (first->ToStringPretty(pretty) != Json::SUCCESS)
-        exit(305);
-    flat::FixedJsonBuffer<128 * 1024> second;
-    if (Json::Parse(pretty, strlen(pretty), &second) != Json::SUCCESS)
-        exit(306);
-    char secondCanonical[32 * 1024];
-    if (second->ToString(secondCanonical) != Json::SUCCESS || strcmp(secondCanonical, pCanonical))
-        exit(307);
-    return true;
-}
-
-static bool
-add_fuzz_whitespace(const char* pCanonical, FuzzText& output, uint64_t& random)
-{
-    static const char whitespace[] = { ' ', '\t', '\n', '\r' };
-    bool inString = false;
-    bool escaped = false;
-    size_t size = strlen(pCanonical);
-    if (!output.Add(whitespace[fuzz_random(random) % ARRAYLEN(whitespace)]))
+    default: {
+      if (!text.Add('{'))
         return false;
-    for (size_t i = 0; i < size; ++i) {
-        char value = pCanonical[i];
-        if (!inString && (value == ']' || value == '}') && (fuzz_random(random) & 1) &&
-            !output.Add(whitespace[fuzz_random(random) % ARRAYLEN(whitespace)]))
-            return false;
-        if (!output.Add(value))
-            return false;
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (value == '\\') {
-                escaped = true;
-            } else if (value == '"') {
-                inString = false;
-            }
-        } else if (value == '"') {
-            inString = true;
-        } else if ((value == '[' || value == '{' || value == ',' || value == ':') &&
-                   (fuzz_random(random) & 1) &&
-                   !output.Add(whitespace[fuzz_random(random) % ARRAYLEN(whitespace)])) {
-            return false;
-        }
+      size_t count = FuzzRandom(random) % 4;
+      for (size_t i = 0; i < count; ++i) {
+        const char* pKey = keys[FuzzRandom(random) % ARRAYLEN(keys)];
+        if ((i && !text.Add(',')) || !text.Append(pKey, strlen(pKey)) || !text.Add(':') || !GenerateJsonValue(text, random, depth - 1))
+          return false;
+      }
+      return text.Add('}');
     }
-    return output.Add(whitespace[fuzz_random(random) % ARRAYLEN(whitespace)]);
+  }
 }
 
-void
-generated_document_fuzz_test()
+static bool CanonicalizeIfAccepted(const char* pData, size_t size, char* pCanonical, size_t capacity)
 {
-    uint64_t random = 0xd1b54a32d192ed03ull;
-    for (int iteration = 0; iteration < 512; ++iteration) {
-        char input[2048];
-        FuzzText generated{input, sizeof(input)};
-        if (!generate_json_value(generated, random, 6))
-            exit(308);
+  FixedArena<128 * 1024> firstStorage;
+  Arena first     = firstStorage;
+  const Node* firstRoot = nullptr;
+  Result status   = ParseJSON(pData, size, &first, &firstRoot);
+  if (status != SUCCESS) {
+    if (status != ERROR_MALFORMED && status != ABSENT_VALUE)
+      exit(301);
+    return false;
+  }
+  if (firstRoot->ToString(Span<char>(capacity, pCanonical)) != SUCCESS)
+    exit(302);
 
-        char canonical[32 * 1024];
-        if (!canonicalize_if_accepted(input, generated.size, canonical, sizeof(canonical)))
-            exit(309);
+  size_t estimate = EstimateSize(pData, size);
+  FixedArena<256 * 1024> estimatedStorage;
+  Arena estimated     = estimatedStorage;
+  const Node* estimatedRoot = nullptr;
+  if (estimate == SIZE_MAX || estimate > sizeof(estimatedStorage.bytes))
+    exit(303);
+  estimated.capacity = estimate;
+  if (ParseJSON(pData, size, &estimated, &estimatedRoot) != SUCCESS)
+    exit(304);
 
-        char spaced[32 * 1024];
-        FuzzText whitespace{spaced, sizeof(spaced)};
-        if (!add_fuzz_whitespace(canonical, whitespace, random))
-            exit(310);
-        char spacedCanonical[32 * 1024];
-        if (!canonicalize_if_accepted(spaced, whitespace.size, spacedCanonical, sizeof(spacedCanonical)) ||
-            strcmp(spacedCanonical, canonical))
-            exit(311);
-    }
+  char pretty[32 * 1024];
+  if (firstRoot->ToStringPretty(pretty) != SUCCESS)
+    exit(305);
+  FixedArena<128 * 1024> secondStorage;
+  Arena second     = secondStorage;
+  const Node* secondRoot = nullptr;
+  if (ParseJSON(pretty, strlen(pretty), &second, &secondRoot) != SUCCESS)
+    exit(306);
+  char secondCanonical[32 * 1024];
+  if (secondRoot->ToString(secondCanonical) != SUCCESS || strcmp(secondCanonical, pCanonical))
+    exit(307);
+  return true;
 }
 
-void
-mutation_fuzz_test()
+static bool AddFuzzWhitespace(const char* pCanonical, FuzzText& output, uint64_t& random)
 {
-    static const char* const seeds[] = {
-        "null",
-        R"([true,false,null,0,-1,3.1415927,"text"])",
-        R"({"a":1,"b":[2,3],"c":{"d":"line\n","e":"\u03c0"}})",
-        R"([[[{"key":"value","empty":[],"object":{}}]]])",
-    };
-    static const unsigned char mutations[] = {
-        0, 1, ' ', '\n', '"', '\\', ',', ':', '[', ']', '{', '}', '-', '0', 'e', 0x80, 0xff,
-    };
-
-    for (size_t seedIndex = 0; seedIndex < ARRAYLEN(seeds); ++seedIndex) {
-        const char* pSeed = seeds[seedIndex];
-        size_t seedSize = strlen(pSeed);
-        for (size_t position = 0; position < seedSize; ++position) {
-            char mutation[1024];
-            memcpy(mutation, pSeed, position);
-            memcpy(mutation + position, pSeed + position + 1, seedSize - position - 1);
-            char canonical[4096];
-            canonicalize_if_accepted(mutation, seedSize - 1, canonical, sizeof(canonical));
-
-            for (size_t value = 0; value < ARRAYLEN(mutations); ++value) {
-                memcpy(mutation, pSeed, seedSize);
-                mutation[position] = (char)mutations[value];
-                canonicalize_if_accepted(mutation, seedSize, canonical, sizeof(canonical));
-            }
-        }
-        for (size_t position = 0; position <= seedSize; ++position) {
-            for (size_t value = 0; value < ARRAYLEN(mutations); ++value) {
-                char mutation[1024];
-                memcpy(mutation, pSeed, position);
-                mutation[position] = (char)mutations[value];
-                memcpy(mutation + position + 1, pSeed + position, seedSize - position);
-                char canonical[4096];
-                canonicalize_if_accepted(mutation, seedSize + 1, canonical, sizeof(canonical));
-            }
-        }
+  static const char whitespace[] = {' ', '\t', '\n', '\r'};
+  bool inString                  = false;
+  bool escaped                   = false;
+  size_t size                    = strlen(pCanonical);
+  if (!output.Add(whitespace[FuzzRandom(random) % ARRAYLEN(whitespace)]))
+    return false;
+  for (size_t i = 0; i < size; ++i) {
+    char value = pCanonical[i];
+    if (!inString && (value == ']' || value == '}') && (FuzzRandom(random) & 1) && !output.Add(whitespace[FuzzRandom(random) % ARRAYLEN(whitespace)]))
+      return false;
+    if (!output.Add(value))
+      return false;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (value == '\\') {
+        escaped = true;
+      } else if (value == '"') {
+        inString = false;
+      }
+    } else if (value == '"') {
+      inString = true;
+    } else if ((value == '[' || value == '{' || value == ',' || value == ':') && (FuzzRandom(random) & 1) && !output.Add(whitespace[FuzzRandom(random) % ARRAYLEN(whitespace)])) {
+      return false;
     }
+  }
+  return output.Add(whitespace[FuzzRandom(random) % ARRAYLEN(whitespace)]);
 }
 
-void
-numeric_bit_pattern_fuzz_test()
+void GeneratedDocumentFuzzTest()
 {
-    uint64_t random = 0x94d049bb133111ebull;
-    for (int iteration = 0; iteration < 4096; ++iteration) {
-        uint64_t bits = fuzz_random(random);
-        if ((bits & 0x7ff0000000000000ull) == 0x7ff0000000000000ull)
-            continue;
-        double value;
-        memcpy(&value, &bits, sizeof(value));
-        char text[4096];
-        if (flat::WriteJson(value, text) != Json::SUCCESS)
-            exit(312);
-        flat::FixedJsonBuffer<4096> arena;
-        Json::Status status = Json::Parse(text, strlen(text), &arena);
-        if (status != Json::SUCCESS) {
-            fprintf(stderr, "double fuzz parse failed: bits=%016llx text=%s status=%s\n",
-                    (unsigned long long)bits, text, Json::StatusToString(status));
-            exit(313);
-        }
-        double parsed = arena->GetNumber();
-        uint64_t expectedBits = value == 0 ? 0 : bits;
-        if (DoubleBits(parsed) != expectedBits)
-            exit(314);
+  uint64_t random = 0xd1b54a32d192ed03ull;
+  for (int iteration = 0; iteration < 512; ++iteration) {
+    char input[2048];
+    FuzzText generated{input, sizeof(input)};
+    if (!GenerateJsonValue(generated, random, 6))
+      exit(308);
+
+    char canonical[32 * 1024];
+    if (!CanonicalizeIfAccepted(input, generated.size, canonical, sizeof(canonical)))
+      exit(309);
+
+    char spaced[32 * 1024];
+    FuzzText whitespace{spaced, sizeof(spaced)};
+    if (!AddFuzzWhitespace(canonical, whitespace, random))
+      exit(310);
+    char spacedCanonical[32 * 1024];
+    if (!CanonicalizeIfAccepted(spaced, whitespace.size, spacedCanonical, sizeof(spacedCanonical)) || strcmp(spacedCanonical, canonical))
+      exit(311);
+  }
+}
+
+void MutationFuzzTest()
+{
+  static const char* const seeds[] = {
+      "null",
+      R"([true,false,null,0,-1,3.1415927,"text"])",
+      R"({"a":1,"b":[2,3],"c":{"d":"line\n","e":"\u03c0"}})",
+      R"([[[{"key":"value","empty":[],"object":{}}]]])",
+  };
+  static const unsigned char mutations[] = {
+      0, 1, ' ', '\n', '"', '\\', ',', ':', '[', ']', '{', '}', '-', '0', 'e', 0x80, 0xff,
+  };
+
+  for (size_t seedIndex = 0; seedIndex < ARRAYLEN(seeds); ++seedIndex) {
+    const char* pSeed = seeds[seedIndex];
+    size_t seedSize   = strlen(pSeed);
+    for (size_t position = 0; position < seedSize; ++position) {
+      char mutation[1024];
+      memcpy(mutation, pSeed, position);
+      memcpy(mutation + position, pSeed + position + 1, seedSize - position - 1);
+      char canonical[4096];
+      CanonicalizeIfAccepted(mutation, seedSize - 1, canonical, sizeof(canonical));
+
+      for (size_t value = 0; value < ARRAYLEN(mutations); ++value) {
+        memcpy(mutation, pSeed, seedSize);
+        mutation[position] = (char)mutations[value];
+        CanonicalizeIfAccepted(mutation, seedSize, canonical, sizeof(canonical));
+      }
+    }
+    for (size_t position = 0; position <= seedSize; ++position) {
+      for (size_t value = 0; value < ARRAYLEN(mutations); ++value) {
+        char mutation[1024];
+        memcpy(mutation, pSeed, position);
+        mutation[position] = (char)mutations[value];
+        memcpy(mutation + position + 1, pSeed + position, seedSize - position);
         char canonical[4096];
-        if (arena->ToString(canonical) != Json::SUCCESS || strcmp(canonical, text))
-            exit(315);
+        CanonicalizeIfAccepted(mutation, seedSize + 1, canonical, sizeof(canonical));
+      }
     }
-
-    for (int iteration = 0; iteration < 4096; ++iteration) {
-        uint32_t bits = (uint32_t)fuzz_random(random);
-        if ((bits & 0x7f800000u) == 0x7f800000u)
-            continue;
-        float value;
-        memcpy(&value, &bits, sizeof(value));
-        char text[4096];
-        if (flat::WriteJson(value, text) != Json::SUCCESS)
-            exit(316);
-        flat::FixedJsonBuffer<4096> arena;
-        Json::Status status = Json::Parse(text, strlen(text), &arena);
-        if (status != Json::SUCCESS) {
-            fprintf(stderr, "float fuzz parse failed: bits=%08x text=%s status=%s\n",
-                    bits, text, Json::StatusToString(status));
-            exit(317);
-        }
-        float parsed = (float)arena->GetNumber();
-        uint32_t parsedBits;
-        memcpy(&parsedBits, &parsed, sizeof(parsedBits));
-        uint32_t expectedBits = value == 0 ? 0 : bits;
-        if (parsedBits != expectedBits)
-            exit(318);
-    }
-
-    for (int iteration = 0; iteration < 4096; ++iteration) {
-        uint64_t bits = fuzz_random(random);
-        long long value;
-        memcpy(&value, &bits, sizeof(value));
-        char text[128];
-        if (flat::WriteJson(value, text) != Json::SUCCESS)
-            exit(319);
-        flat::FixedJsonBuffer<512> arena;
-        if (Json::Parse(text, strlen(text), &arena) != Json::SUCCESS || !arena->IsLong() ||
-            arena->GetLong() != value)
-            exit(320);
-    }
+  }
 }
 
-template<typename Write>
-static void
-output_boundary_canary_case(Write write, int error)
+void NumericBitPatternFuzzTest()
 {
-    static constexpr size_t GuardSize = 32;
-    static constexpr size_t OutputCapacity = 32 * 1024;
-    char expected[OutputCapacity];
-    if (write(flat::Span<char>(sizeof(expected), expected)) != Json::SUCCESS)
-        exit(error);
-    size_t required = strlen(expected) + 1;
-    size_t capacities[] = { 0, required - 1, required, required + 7, 2048, 4096, OutputCapacity };
-    bool succeeded = false;
-    for (size_t index = 0; index < ARRAYLEN(capacities); ++index) {
-        size_t capacity = capacities[index];
-        if (index && capacity == capacities[index - 1])
-            continue;
-        alignas(8) unsigned char storage[GuardSize + OutputCapacity + GuardSize];
-        memset(storage, 0xa5, sizeof(storage));
-        char* pOutput = (char*)storage + GuardSize;
-        Json::Status status = write(flat::Span<char>(capacity, pOutput));
-        if (status != Json::SUCCESS && status != Json::INSUFFICIENT_SPACE)
-            exit(error + 1);
-        if (capacity < required && status != Json::INSUFFICIENT_SPACE)
-            exit(error + 1);
-        if (succeeded && status != Json::SUCCESS)
-            exit(error + 1);
-        succeeded |= status == Json::SUCCESS;
-        for (size_t i = 0; i < GuardSize; ++i) {
-            if (storage[i] != 0xa5)
-                exit(error + 2);
-        }
-        for (size_t i = GuardSize + capacity; i < sizeof(storage); ++i) {
-            if (storage[i] != 0xa5)
-                exit(error + 3);
-        }
-        if (status == Json::SUCCESS && strcmp(pOutput, expected))
-            exit(error + 4);
-    }
-    if (!succeeded)
-        exit(error + 5);
-}
 
-void
-output_boundary_canary_test()
-{
-    static constexpr char Source[] = R"({"array":[null,true,false,-9223372036854775808,3.141592653589793],"string":"quote\"slash\\line\n\u03c0","object":{"empty":{},"items":[]}})";
-    flat::FixedJsonBuffer<16 * 1024> arena;
-    if (Json::Parse(Source, &arena) != Json::SUCCESS)
-        exit(321);
-    const Json* pJson = arena.pRoot;
-    output_boundary_canary_case([&](flat::Span<char> output) { return pJson->ToString(output); }, 322);
-    output_boundary_canary_case([&](flat::Span<char> output) { return pJson->ToStringPretty(output); }, 327);
-    output_boundary_canary_case([](flat::Span<char> output) {
-        return flat::WriteJson(flat::JsonObject({
-          { "model", "gpt-5" },
-          { "values", flat::JsonArray({ 0, 1, 2, 3.5, true, nullptr }) },
-        }), output);
-    }, 332);
-}
-
-void
-object_threshold_fuzz_test()
-{
-    static const int counts[] = { 1, 2, 31, 99, 100, 101, 127 };
-    for (size_t test = 0; test < ARRAYLEN(counts); ++test) {
-        int count = counts[test];
-        char text[32 * 1024];
-        char* pCursor = text;
-        *pCursor++ = '{';
-        for (int key = count - 1; key >= 0; --key) {
-            size_t remaining = sizeof(text) - (size_t)(pCursor - text);
-            int size = snprintf(pCursor, remaining, "%s\"key%03d\":%d", key == count - 1 ? "" : ",", key, key);
-            if (size < 0 || (size_t)size >= remaining)
-                exit(337);
-            pCursor += size;
-        }
-        *pCursor++ = '}';
-        *pCursor = '\0';
-
-        flat::FixedJsonBuffer<128 * 1024> arena;
-        if (Json::Parse(text, (size_t)(pCursor - text), &arena) != Json::SUCCESS ||
-            arena->GetSize() != (size_t)count)
-            exit(338);
-        for (int key = 0; key < count; ++key) {
-            char name[16];
-            int size = snprintf(name, sizeof(name), "key%03d", key);
-            flat::String keyName((size_t)size, name);
-            if (!arena->HasKey(keyName) || (*arena.pRoot)[keyName].GetLong() != key)
-                exit(339);
-        }
-        if (arena->HasKey("key999") || arena->HasKey("missing"))
-            exit(340);
-        char output[32 * 1024];
-        if (arena->ToString(output) != Json::SUCCESS || strcmp(output, text))
-            exit(341);
-    }
-}
-
-void
-embedded_nul_key_test()
-{
-    static constexpr char Text[] = R"({"a\u0000b":1,"a":2,"":3,"\u0000":4,"value":"x\u0000y"})";
-    flat::FixedJsonBuffer<4096> arena;
-    if (Json::Parse(Text, &arena) != Json::SUCCESS)
-        exit(342);
-    const char nulKey[] = { 'a', '\0', 'b' };
-    const char onlyNul[] = { '\0' };
-    flat::String value = (*arena.pRoot)["value"].GetString();
-    if ((*arena.pRoot)[flat::String(sizeof(nulKey), nulKey)].GetLong() != 1 ||
-        (*arena.pRoot)["a"].GetLong() != 2 ||
-        (*arena.pRoot)[""].GetLong() != 3 ||
-        (*arena.pRoot)[flat::String(sizeof(onlyNul), onlyNul)].GetLong() != 4 ||
-        value.size != 3 || value[0] != 'x' || value[1] != '\0' || value[2] != 'y' || value[3] != '\0')
-        exit(343);
-    char output[4096];
-    if (arena->ToString(output) != Json::SUCCESS || strcmp(output, Text))
-        exit(344);
-}
-
-static size_t
-build_nested_json(char* pOutput, size_t capacity, int depth, bool alternating)
-{
-    FuzzText text{pOutput, capacity};
-    for (int level = 0; level < depth; ++level) {
-        if (!alternating || !(level & 1)) {
-            if (!text.Add('['))
-                return 0;
-        } else if (!text.Append("{\"k\":")) {
-            return 0;
-        }
-    }
-    if (!text.Add('0'))
-        return 0;
-    for (int level = depth - 1; level >= 0; --level) {
-        if (!text.Add(!alternating || !(level & 1) ? ']' : '}'))
-            return 0;
-    }
-    return text.size;
-}
-
-void
-nesting_and_rollback_fuzz_test()
-{
-    for (int alternating = 0; alternating < 2; ++alternating) {
-        for (int depth = 0; depth <= 24; ++depth) {
-            char text[1024];
-            size_t size = build_nested_json(text, sizeof(text), depth, alternating);
-            flat::FixedJsonBuffer<16 * 1024> arena;
-            Json::Status status = Json::Parse(text, size, &arena);
-            Json::Status expected = depth <= 19 ? Json::SUCCESS : Json::MALFORMED;
-            if (status != expected || (status == Json::SUCCESS) != (arena.pRoot != nullptr)) {
-                fprintf(stderr, "nesting boundary failed: alternating=%d depth=%d status=%s expected=%s\n",
-                        alternating, depth, Json::StatusToString(status), Json::StatusToString(expected));
-                exit(345);
-            }
-        }
-    }
-
-    static constexpr char Stable[] = R"({"root":[1,2,{"x":"stable"}],"tail":true})";
-    flat::FixedJsonBuffer<16 * 1024> arena;
-    if (Json::Parse(Stable, &arena) != Json::SUCCESS)
-        exit(346);
-    const Json* pStable = arena.pRoot;
-    size_t back = arena.back;
-    char expected[1024];
-    if (pStable->ToString(expected) != Json::SUCCESS)
-        exit(347);
-    for (size_t size = 1; size < sizeof(Stable) - 1; ++size) {
-        if (Json::Parse(Stable, size, &arena) != Json::MALFORMED || arena.pRoot || arena.back != back)
-            exit(348);
-        char output[1024];
-        if (pStable->ToString(output) != Json::SUCCESS || strcmp(output, expected))
-            exit(349);
-    }
-}
-
-void
-immutable_layout_test()
-{
-    flat::FixedJsonBuffer<2048> a;
-    Json::Status status = Json::Parse(R"([1,[2,3],{"x":4,"s":"ok"}])", &a);
-    if (status != Json::SUCCESS)
-        exit(20);
-    const Json* pJson = a.pRoot;
-    flat::u32 root_offset = (flat::u32)((const char*)pJson - a.bytes);
-    if ((const char*)pJson < a.bytes ||
-        (const char*)pJson >= a.bytes + sizeof(a.bytes))
-        exit(21);
-    if ((*pJson)[0].GetLong() != 1 ||
-        (*pJson)[1][1].GetLong() != 3 ||
-        (*pJson)[2]["x"].GetLong() != 4)
-        exit(22);
-    if (!pJson->HasSize() || !pJson->HasIndex(0) || !pJson->HasIndex(2) ||
-        pJson->HasIndex(3) || pJson->HasIndex(-1) || (*pJson)[0].HasSize() ||
-        (*pJson)[0].HasIndex(0) || !(*pJson)[2].HasKey("x") || (*pJson)[2].HasKey("missing"))
-        exit(59);
-    if ((const char*)&(*pJson)[1] - (const char*)&(*pJson)[0] != sizeof(Json) ||
-        (const char*)&(*pJson)[2] - (const char*)&(*pJson)[1] != sizeof(Json) ||
-        (const char*)&(*pJson)[1][1] - (const char*)&(*pJson)[1][0] != -(ptrdiff_t)sizeof(Json))
-        exit(57);
-    const Json& array = pJson->GetArray();
-    const Json& object = array[2].GetObject();
-    if (&array != pJson || array.GetSize() != 3 ||
-        &object != &array[2] || object.GetSize() != 2)
-        exit(50);
-    if (pJson->span != sizeof(a.bytes) - root_offset)
-        exit(23);
-    alignas(8) char relocated_storage[2048];
-    memcpy(relocated_storage, pJson, pJson->span);
-    const Json* relocated = (const Json*)relocated_storage;
-    if ((*relocated)[0].GetLong() != 1 ||
-        (*relocated)[1][1].GetLong() != 3 ||
-        (*relocated)[2]["x"].GetLong() != 4 ||
-        strcmp((*relocated)[2]["s"].GetString().data, "ok"))
-        exit(43);
-    alignas(8) char relocated_array_storage[2048];
-    memcpy(relocated_array_storage, &array[1], array[1].span);
-    const Json* relocated_array = (const Json*)relocated_array_storage;
-    if ((*relocated_array)[0].GetLong() != 2 || (*relocated_array)[1].GetLong() != 3)
-        exit(58);
-    char output[2048];
-    if (pJson->ToString(output) != Json::SUCCESS)
-        exit(24);
-    if (strcmp(output, R"([1,[2,3],{"x":4,"s":"ok"}])"))
-        exit(24);
-    if (Json::Parse("[1,", &a) != Json::MALFORMED || a.pRoot ||
-        (*pJson)[2]["x"].GetLong() != 4)
-        exit(26);
-}
-
-void
-deep_test()
-{
-    char text[8192];
-    if (flat::WriteJson(
-          flat::JsonObject({ { "content",
-                               flat::JsonArray({ flat::JsonArray({ flat::JsonArray(
-                             { 0, 10, 20, 3.14, 40 }) }) }) } }),
-          text) != Json::SUCCESS)
-        exit(2);
-    if (strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
-        exit(2);
-}
-
-static flat::FixedJsonBuffer<65536> g_static_arena;
-
-void
-static_arena_test()
-{
+  uint64_t random = 0x94d049bb133111ebull;
+  for (int iteration = 0; iteration < 4096; ++iteration) {
+    uint64_t bits = FuzzRandom(random);
+    if ((bits & 0x7ff0000000000000ull) == 0x7ff0000000000000ull)
+      continue;
+    double value;
+    memcpy(&value, &bits, sizeof(value));
     char text[4096];
-    if (flat::WriteJson(
-          flat::JsonObject({ { "name", "static" },
-                             { "values", flat::JsonArray({ 1, 2 }) } }),
-          text) != Json::SUCCESS)
-        exit(8);
-    if (strcmp(text, "{\"name\":\"static\",\"values\":[1,2]}"))
-        exit(8);
-    Json::Status status = Json::Parse("{\"k\": [true, null, 3.5]}", &g_static_arena);
-    if (status != Json::SUCCESS)
-        exit(9);
-    const Json* pJson = g_static_arena.pRoot;
-    if (pJson->ToString(text) != Json::SUCCESS ||
-        strcmp(text, "{\"k\":[true,null,3.5]}"))
-        exit(13);
+    if (WriteJSON(value, text) != SUCCESS)
+      exit(312);
+    FixedArena<4096> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    Result status   = ParseJSON(text, strlen(text), &arena, &arenaRoot);
+    if (status != SUCCESS) {
+      fprintf(stderr, "double fuzz parse failed: bits=%016llx text=%s status=%s\n", (unsigned long long)bits, text, string_Result(status));
+      exit(313);
+    }
+    double parsed         = arenaRoot->GetNumber();
+    uint64_t expectedBits = value == 0 ? 0 : bits;
+    if (DoubleBits(parsed) != expectedBits)
+      exit(314);
+    char canonical[4096];
+    if (arenaRoot->ToString(canonical) != SUCCESS || strcmp(canonical, text))
+      exit(315);
+  }
+
+  for (int iteration = 0; iteration < 4096; ++iteration) {
+    uint32_t bits = (uint32_t)FuzzRandom(random);
+    if ((bits & 0x7f800000u) == 0x7f800000u)
+      continue;
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    char text[4096];
+    if (WriteJSON(value, text) != SUCCESS)
+      exit(316);
+    FixedArena<4096> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    Result status   = ParseJSON(text, strlen(text), &arena, &arenaRoot);
+    if (status != SUCCESS) {
+      fprintf(stderr, "float fuzz parse failed: bits=%08x text=%s status=%s\n", bits, text, string_Result(status));
+      exit(317);
+    }
+    float parsed = (float)arenaRoot->GetNumber();
+    uint32_t parsedBits;
+    memcpy(&parsedBits, &parsed, sizeof(parsedBits));
+    uint32_t expectedBits = value == 0 ? 0 : bits;
+    if (parsedBits != expectedBits)
+      exit(318);
+  }
+
+  for (int iteration = 0; iteration < 4096; ++iteration) {
+    uint64_t bits = FuzzRandom(random);
+    long long value;
+    memcpy(&value, &bits, sizeof(value));
+    char text[128];
+    if (WriteJSON(value, text) != SUCCESS)
+      exit(319);
+    FixedArena<512> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    if (ParseJSON(text, strlen(text), &arena, &arenaRoot) != SUCCESS || !arenaRoot->IsLong() || arenaRoot->GetLong() != value)
+      exit(320);
+  }
 }
 
-void
-stack_arena_test()
+template <typename Write>
+static void OutputBoundaryCanaryCase(Write write, int error)
 {
-    flat::FixedJsonBuffer<16384> a;
-    Json::Status status = Json::Parse("[1, \"two\", {\"three\": 3}]", &a);
-    if (status != Json::SUCCESS)
-        exit(14);
-    const Json* pJson = a.pRoot;
-    char text[16384];
-    if (pJson->ToString(text) != Json::SUCCESS ||
-        strcmp(text, "[1,\"two\",{\"three\":3}]"))
-        exit(15);
-    if (strcmp((*pJson)[1].GetString().data, "two"))
-        exit(16);
+  static constexpr size_t GuardSize      = 32;
+  static constexpr size_t OutputCapacity = 32 * 1024;
+  char expected[OutputCapacity];
+  if (write(Span<char>(sizeof(expected), expected)) != SUCCESS)
+    exit(error);
+  size_t required     = strlen(expected) + 1;
+  size_t capacities[] = {0, required - 1, required, required + 7, 2048, 4096, OutputCapacity};
+  bool succeeded      = false;
+  for (size_t index = 0; index < ARRAYLEN(capacities); ++index) {
+    size_t capacity = capacities[index];
+    if (index && capacity == capacities[index - 1])
+      continue;
+    alignas(8) unsigned char storage[GuardSize + OutputCapacity + GuardSize];
+    memset(storage, 0xa5, sizeof(storage));
+    char* pOutput       = (char*)storage + GuardSize;
+    Result status = write(Span<char>(capacity, pOutput));
+    if (status != SUCCESS && status != ERROR_INSUFFICIENT_SPACE)
+      exit(error + 1);
+    if (capacity < required && status != ERROR_INSUFFICIENT_SPACE)
+      exit(error + 1);
+    if (succeeded && status != SUCCESS)
+      exit(error + 1);
+    succeeded |= status == SUCCESS;
+    for (size_t i = 0; i < GuardSize; ++i) {
+      if (storage[i] != 0xa5)
+        exit(error + 2);
+    }
+    for (size_t i = GuardSize + capacity; i < sizeof(storage); ++i) {
+      if (storage[i] != 0xa5)
+        exit(error + 3);
+    }
+    if (status == SUCCESS && strcmp(pOutput, expected))
+      exit(error + 4);
+  }
+  if (!succeeded)
+    exit(error + 5);
 }
 
-void
-parse_test()
+void OutputBoundaryCanaryTest()
 {
-    flat::FixedJsonBuffer<65536> a;
-    Json::Status status = Json::Parse("{ \"content\":[[[0,10,20,3.14,40]]]}", &a);
-    if (status != Json::SUCCESS)
-        exit(3);
-    const Json* pJson = a.pRoot;
-    char text[65536];
-    if (pJson->ToString(text) != Json::SUCCESS ||
-        strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
-        exit(4);
-    if (pJson->ToStringPretty(text) != Json::SUCCESS ||
-        strcmp(text,
-               R"({"content": [[[0, 10, 20, 3.14, 40]]]})"))
-        exit(5);
-    status = Json::Parse("{ \"a\": 1, \"b\": [2,   3]}", &a);
-    if (status != Json::SUCCESS)
-        exit(6);
-    pJson = a.pRoot;
-    if (pJson->ToString(text) != Json::SUCCESS ||
-        strcmp(text, R"({"a":1,"b":[2,3]})"))
-        exit(6);
-    if (pJson->ToStringPretty(text) != Json::SUCCESS ||
-        strcmp(text,
-               R"({
+  static constexpr char Source[] = R"({"array":[null,true,false,-9223372036854775808,3.141592653589793],"string":"quote\"slash\\line\n\u03c0","object":{"empty":{},"items":[]}})";
+  FixedArena<16 * 1024> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(Source, &arena, &arenaRoot) != SUCCESS)
+    exit(321);
+  const Node* pJson = arenaRoot;
+  OutputBoundaryCanaryCase([&](Span<char> output) { return pJson->ToString(output); }, 322);
+  OutputBoundaryCanaryCase([&](Span<char> output) { return pJson->ToStringPretty(output); }, 327);
+  OutputBoundaryCanaryCase(
+      [](Span<char> output) {
+        return WriteJSON(ObjectValue({
+                                   {"model", "gpt-5"},
+                                   {"values", ArrayValue({0, 1, 2, 3.5, true, nullptr})},
+                               }),
+                               output);
+      },
+      332);
+}
+
+void ObjectThresholdFuzzTest()
+{
+
+  static const int counts[] = {1, 2, 31, 99, 100, 101, 127};
+  for (size_t test = 0; test < ARRAYLEN(counts); ++test) {
+    int count = counts[test];
+    char text[32 * 1024];
+    char* pCursor = text;
+    *pCursor++    = '{';
+    for (int key = count - 1; key >= 0; --key) {
+      size_t remaining = sizeof(text) - (size_t)(pCursor - text);
+      int size         = snprintf(pCursor, remaining, "%s\"key%03d\":%d", key == count - 1 ? "" : ",", key, key);
+      if (size < 0 || (size_t)size >= remaining)
+        exit(337);
+      pCursor += size;
+    }
+    *pCursor++ = '}';
+    *pCursor   = '\0';
+
+    FixedArena<128 * 1024> arenaStorage;
+    Arena arena     = arenaStorage;
+    const Node* arenaRoot = nullptr;
+    if (ParseJSON(text, (size_t)(pCursor - text), &arena, &arenaRoot) != SUCCESS || arenaRoot->GetSize() != (size_t)count)
+      exit(338);
+    for (int key = 0; key < count; ++key) {
+      char name[16];
+      int size = snprintf(name, sizeof(name), "key%03d", key);
+      String keyName((size_t)size, name);
+      if (!arenaRoot->HasKey(keyName) || (*arenaRoot)[keyName].GetLong() != key)
+        exit(339);
+    }
+    if (arenaRoot->HasKey("key999") || arenaRoot->HasKey("missing"))
+      exit(340);
+    char output[32 * 1024];
+    if (arenaRoot->ToString(output) != SUCCESS || strcmp(output, text))
+      exit(341);
+  }
+}
+
+void EmbeddedNulKeyTest()
+{
+  static constexpr char Text[] = R"({"a\u0000b":1,"a":2,"":3,"\u0000":4,"value":"x\u0000y"})";
+  FixedArena<4096> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(Text, &arena, &arenaRoot) != SUCCESS)
+    exit(342);
+  const char nulKey[]  = {'a', '\0', 'b'};
+  const char onlyNul[] = {'\0'};
+  String value   = (*arenaRoot)["value"].GetString();
+  if ((*arenaRoot)[String(sizeof(nulKey), nulKey)].GetLong() != 1 || (*arenaRoot)["a"].GetLong() != 2 || (*arenaRoot)[""].GetLong() != 3 ||
+      (*arenaRoot)[String(sizeof(onlyNul), onlyNul)].GetLong() != 4 || value.size != 3 || value[0] != 'x' || value[1] != '\0' || value[2] != 'y' || value[3] != '\0')
+    exit(343);
+  char output[4096];
+  if (arenaRoot->ToString(output) != SUCCESS || strcmp(output, Text))
+    exit(344);
+}
+
+static size_t BuildNestedJson(char* pOutput, size_t capacity, int depth, bool alternating)
+{
+  FuzzText text{pOutput, capacity};
+  for (int level = 0; level < depth; ++level) {
+    if (!alternating || !(level & 1)) {
+      if (!text.Add('['))
+        return 0;
+    } else if (!text.Append("{\"k\":")) {
+      return 0;
+    }
+  }
+  if (!text.Add('0'))
+    return 0;
+  for (int level = depth - 1; level >= 0; --level) {
+    if (!text.Add(!alternating || !(level & 1) ? ']' : '}'))
+      return 0;
+  }
+  return text.size;
+}
+
+void NestingAndRollbackFuzzTest()
+{
+
+  for (int alternating = 0; alternating < 2; ++alternating) {
+    for (int depth = 0; depth <= 24; ++depth) {
+      char text[1024];
+      size_t size = BuildNestedJson(text, sizeof(text), depth, alternating);
+      FixedArena<16 * 1024> arenaStorage;
+      Arena arena     = arenaStorage;
+      const Node* arenaRoot = nullptr;
+      Result status   = ParseJSON(text, size, &arena, &arenaRoot);
+      Result expected = depth <= 19 ? SUCCESS : ERROR_MALFORMED;
+      if (status != expected || (status == SUCCESS) != (arenaRoot != nullptr)) {
+        fprintf(stderr, "nesting boundary failed: alternating=%d depth=%d status=%s expected=%s\n", alternating, depth, string_Result(status), string_Result(expected));
+        exit(345);
+      }
+    }
+  }
+
+  static constexpr char Stable[] = R"({"root":[1,2,{"x":"stable"}],"tail":true})";
+  FixedArena<16 * 1024> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  if (ParseJSON(Stable, &arena, &arenaRoot) != SUCCESS)
+    exit(346);
+  const Node* pStable = arenaRoot;
+  size_t used         = arena.Used();
+  char expected[1024];
+  if (pStable->ToString(expected) != SUCCESS)
+    exit(347);
+  for (size_t size = 1; size < sizeof(Stable) - 1; ++size) {
+    if (ParseJSON(Stable, size, &arena, &arenaRoot) != ERROR_MALFORMED || arenaRoot || arena.Used() != used)
+      exit(348);
+    char output[1024];
+    if (pStable->ToString(output) != SUCCESS || strcmp(output, expected))
+      exit(349);
+  }
+}
+
+void ImmutableLayoutTest()
+{
+  FixedArena<2048> aStorage;
+  Arena a       = aStorage;
+  const Node* aRoot   = nullptr;
+  Result status = ParseJSON(R"([1,[2,3],{"x":4,"s":"ok"}])", &a, &aRoot);
+  if (status != SUCCESS)
+    exit(20);
+  const Node* pJson    = aRoot;
+  u32 rootOffset = (u32)((const char*)pJson - (const char*)aStorage.bytes);
+  if ((const char*)pJson < (const char*)aStorage.bytes || (const char*)pJson >= (const char*)aStorage.bytes + sizeof(aStorage.bytes))
+    exit(21);
+  if ((*pJson)[0].GetLong() != 1 || (*pJson)[1][1].GetLong() != 3 || (*pJson)[2]["x"].GetLong() != 4)
+    exit(22);
+  if (!pJson->HasSize() || !pJson->HasIndex(0) || !pJson->HasIndex(2) || pJson->HasIndex(3) || pJson->HasIndex(-1) || (*pJson)[0].HasSize() || (*pJson)[0].HasIndex(0) || !(*pJson)[2].HasKey("x") ||
+      (*pJson)[2].HasKey("missing"))
+    exit(59);
+  if ((const char*)&(*pJson)[1] - (const char*)&(*pJson)[0] != sizeof(Node) || (const char*)&(*pJson)[2] - (const char*)&(*pJson)[1] != sizeof(Node) ||
+      (const char*)&(*pJson)[1][1] - (const char*)&(*pJson)[1][0] != -(ptrdiff_t)sizeof(Node))
+    exit(57);
+  const Node& array  = pJson->GetArray();
+  const Node& object = array[2].GetObject();
+  if (&array != pJson || array.GetSize() != 3 || &object != &array[2] || object.GetSize() != 2)
+    exit(50);
+  if (pJson->span != sizeof(aStorage.bytes) - rootOffset)
+    exit(23);
+  alignas(8) char relocatedStorage[2048];
+  memcpy(relocatedStorage, pJson, pJson->span);
+  const Node* relocated = (const Node*)relocatedStorage;
+  if ((*relocated)[0].GetLong() != 1 || (*relocated)[1][1].GetLong() != 3 || (*relocated)[2]["x"].GetLong() != 4 || strcmp((*relocated)[2]["s"].GetString().data, "ok"))
+    exit(43);
+  alignas(8) char relocatedArrayStorage[2048];
+  memcpy(relocatedArrayStorage, &array[1], array[1].span);
+  const Node* relocatedArray = (const Node*)relocatedArrayStorage;
+  if ((*relocatedArray)[0].GetLong() != 2 || (*relocatedArray)[1].GetLong() != 3)
+    exit(58);
+  char output[2048];
+  if (pJson->ToString(output) != SUCCESS)
+    exit(24);
+  if (strcmp(output, R"([1,[2,3],{"x":4,"s":"ok"}])"))
+    exit(24);
+  if (ParseJSON("[1,", &a, &aRoot) != ERROR_MALFORMED || aRoot || (*pJson)[2]["x"].GetLong() != 4)
+    exit(26);
+}
+
+void DeepTest()
+{
+  char text[8192];
+  if (WriteJSON(ObjectValue({{"content", ArrayValue({Value(ArrayValue({Value(ArrayValue({0, 10, 20, 3.14, 40}))}))})}}), text) != SUCCESS)
+    exit(2);
+  if (strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
+    exit(2);
+}
+
+static struct {
+  FixedArena<65536> storage;
+  Arena arena = storage;
+  const Node* pRoot = nullptr;
+} staticArena;
+
+void StaticArenaTest()
+{
+  char text[4096];
+  if (WriteJSON(ObjectValue({{"name", "static"}, {"values", ArrayValue({1, 2})}}), text) != SUCCESS)
+    exit(8);
+  if (strcmp(text, "{\"name\":\"static\",\"values\":[1,2]}"))
+    exit(8);
+  Result status = ParseJSON("{\"k\": [true, null, 3.5]}", &staticArena.arena, &staticArena.pRoot);
+  if (status != SUCCESS)
+    exit(9);
+  const Node* pJson = staticArena.pRoot;
+  if (pJson->ToString(text) != SUCCESS || strcmp(text, "{\"k\":[true,null,3.5]}"))
+    exit(13);
+}
+
+void StackArenaTest()
+{
+  FixedArena<16384> aStorage;
+  Arena a       = aStorage;
+  const Node* aRoot   = nullptr;
+  Result status = ParseJSON("[1, \"two\", {\"three\": 3}]", &a, &aRoot);
+  if (status != SUCCESS)
+    exit(14);
+  const Node* pJson = aRoot;
+  char text[16384];
+  if (pJson->ToString(text) != SUCCESS || strcmp(text, "[1,\"two\",{\"three\":3}]"))
+    exit(15);
+  if (strcmp((*pJson)[1].GetString().data, "two"))
+    exit(16);
+}
+
+void ParseTest()
+{
+  FixedArena<65536> aStorage;
+  Arena a       = aStorage;
+  const Node* aRoot   = nullptr;
+  Result status = ParseJSON("{ \"content\":[[[0,10,20,3.14,40]]]}", &a, &aRoot);
+  if (status != SUCCESS)
+    exit(3);
+  const Node* pJson = aRoot;
+  char text[65536];
+  if (pJson->ToString(text) != SUCCESS || strcmp(text, "{\"content\":[[[0,10,20,3.14,40]]]}"))
+    exit(4);
+  if (pJson->ToStringPretty(text) != SUCCESS || strcmp(text, R"({"content": [[[0, 10, 20, 3.14, 40]]]})"))
+    exit(5);
+  status = ParseJSON("{ \"a\": 1, \"b\": [2,   3]}", &a, &aRoot);
+  if (status != SUCCESS)
+    exit(6);
+  pJson = aRoot;
+  if (pJson->ToString(text) != SUCCESS || strcmp(text, R"({"a":1,"b":[2,3]})"))
+    exit(6);
+  if (pJson->ToStringPretty(text) != SUCCESS || strcmp(text,
+                                                             R"({
   "a": 1,
   "b": [2, 3]
 })"))
-        exit(7);
+    exit(7);
 }
 
-static const struct
-{
-    const char* before;
-    const char* after;
+static const struct {
+  const char* before;
+  const char* after;
 } kRoundTrip[] = {
 
     // types
-    { "0", "0" },
-    { "[]", "[]" },
-    { "{}", "{}" },
-    { "0.1", "0.1" },
-    { "\"\"", "\"\"" },
-    { "[\"/\"]", "[\"/\"]" },
-    { "[\"cafÃ©\"]", "[\"cafÃ©\"]" },
-    { "null", "null" },
-    { "true", "true" },
-    { "false", "false" },
+    {"0", "0"},
+    {"[]", "[]"},
+    {"{}", "{}"},
+    {"0.1", "0.1"},
+    {"\"\"", "\"\""},
+    {"[\"/\"]", "[\"/\"]"},
+    {"[\"cafÃ©\"]", "[\"cafÃ©\"]"},
+    {"null", "null"},
+    {"true", "true"},
+    {"false", "false"},
 
     // valid utf16 sequences
-    { " [\"\\u0020\"] ", "[\" \"]" },
-    { " [\"\\u00A0\"] ", "[\"\\u00a0\"]" },
+    {" [\"\\u0020\"] ", "[\" \"]"},
+    {" [\"\\u00A0\"] ", "[\"\\u00a0\"]"},
 
     // when we encounter invalid utf16 sequences
     // we turn them into ascii
-    { "[\"\\uDFAA\"]", "[\"\\\\uDFAA\"]" },
-    { " [\"\\uDd1e\\uD834\"] ", "[\"\\\\uDd1e\\\\uD834\"]" },
-    { " [\"\\ud800abc\"] ", "[\"\\\\ud800abc\"]" },
-    { " [\"\\ud800\"] ", "[\"\\\\ud800\"]" },
-    { " [\"\\uD800\\uD800\\n\"] ", "[\"\\\\uD800\\\\uD800\\n\"]" },
-    { " [\"\\uDd1ea\"] ", "[\"\\\\uDd1ea\"]" },
-    { " [\"\\uD800\\n\"] ", "[\"\\\\uD800\\n\"]" },
+    {"[\"\\uDFAA\"]", "[\"\\\\uDFAA\"]"},
+    {" [\"\\uDd1e\\uD834\"] ", "[\"\\\\uDd1e\\\\uD834\"]"},
+    {" [\"\\ud800abc\"] ", "[\"\\\\ud800abc\"]"},
+    {" [\"\\ud800\"] ", "[\"\\\\ud800\"]"},
+    {" [\"\\uD800\\uD800\\n\"] ", "[\"\\\\uD800\\\\uD800\\n\"]"},
+    {" [\"\\uDd1ea\"] ", "[\"\\\\uDd1ea\"]"},
+    {" [\"\\uD800\\n\"] ", "[\"\\\\uD800\\n\"]"},
 
     // underflow and overflow
-    { " [123.456e-789] ", "[0]" },
-    { " [0."
-      "4e0066999999999999999999999999999999999999999999999999999999999999999999"
-      "9999999999999999999999999999999999999999999999999969999999006] ",
-      "[1e5000]" },
-    { " [1.5e+9999] ", "[1e5000]" },
-    { " [-1.5e+9999] ", "[-1e5000]" },
-    { " [-123123123123123123123123123123] ", "[-1.2312312312312312e+29]" },
+    {" [123.456e-789] ", "[0]"},
+    {" [0."
+     "4e0066999999999999999999999999999999999999999999999999999999999999999999"
+     "9999999999999999999999999999999999999999999999999969999999006] ",
+     "[1e5000]"},
+    {" [1.5e+9999] ", "[1e5000]"},
+    {" [-1.5e+9999] ", "[-1e5000]"},
+    {" [-123123123123123123123123123123] ", "[-1.2312312312312312e+29]"},
 };
 
 // https://github.com/nst/JSONTestSuite/
-static const struct
-{
-    Json::Status error;
-    const char* json;
-    size_t size;
+static const struct {
+  Result error;
+  const char* json;
+  size_t size;
 } kJsonTestSuite[] = {
-    { Json::MALFORMED, "" },
-    { Json::MALFORMED, "[] []" },
-    { Json::MALFORMED, "[nan]" },
-    { Json::MALFORMED, "[-nan]" },
-    { Json::MALFORMED, "[+NaN]" },
-    { Json::MALFORMED,
-      "{\"Extra value after close\": true} \"misplaced quoted value\"" },
-    { Json::MALFORMED, "{\"Illegal expression\": 1 + 2}" },
-    { Json::MALFORMED, "{\"Illegal invocation\": alert()}" },
-    { Json::MALFORMED, "{\"Numbers cannot have leading zeroes\": 013}" },
-    { Json::MALFORMED, "{\"Numbers cannot be hex\": 0x14}" },
-    { Json::MALFORMED, "[\\naked]" },
-    { Json::MALFORMED, "[\"Illegal backslash escape: \\017\"]" },
-    { Json::MALFORMED,
-      "[[[[[[[[[[[[[[[[[[[[\"Too deep\"]]]]]]]]]]]]]]]]]]]]" },
-    { Json::MALFORMED, "{\"Missing colon\" null}" },
-    { Json::MALFORMED, "{\"Double colon\":: null}" },
-    { Json::MALFORMED, "{\"Comma instead of colon\", null}" },
-    { Json::MALFORMED, "[\"Colon instead of comma\": false]" },
-    { Json::MALFORMED, "[\"Bad value\", truth]" },
-    { Json::MALFORMED, "[\'single quote\']" },
-    { Json::MALFORMED,
-      "[\"tab\\   character\\   in\\  string\\  \"]" },
-    { Json::MALFORMED, "[\"line\\\nbreak\"]" },
-    { Json::MALFORMED, "[0e]" },
-    { Json::MALFORMED, "[\"Unclosed array\"" },
-    { Json::MALFORMED, "[0e+]" },
-    { Json::MALFORMED, "[0e+-1]" },
-    { Json::MALFORMED, "{\"Comma instead if closing brace\": true," },
-    { Json::MALFORMED, "[\"mismatch\"}" },
-    { Json::MALFORMED, "{unquoted_key: \"keys must be quoted\"}" },
-    { Json::MALFORMED, "[\"extra comma\",]" },
-    { Json::MALFORMED, "[\"double extra comma\",,]" },
-    { Json::MALFORMED, "[   , \"<-- missing value\"]" },
-    { Json::MALFORMED, "[\"Comma after the close\"]," },
-    { Json::MALFORMED, "[\"Extra close\"]]" },
-    { Json::MALFORMED, "{\"Extra comma\": true,}" },
-    { Json::MALFORMED, " {\"a\" " },
-    { Json::MALFORMED, " {\"a\": " },
-    { Json::MALFORMED, " {:\"b\" " },
-    { Json::MALFORMED, " {\"a\" b} " },
-    { Json::MALFORMED, " {key: 'value'} " },
-    { Json::MALFORMED, " {\"a\":\"a\" 123} " },
-    { Json::MALFORMED, " \x7b\xf0\x9f\x87\xa8\xf0\x9f\x87\xad\x7d " },
-    { Json::MALFORMED, " {[: \"x\"} " },
-    { Json::MALFORMED, " [1.8011670033376514H-308] " },
-    { Json::MALFORMED, " [1.2a-3] " },
-    { Json::MALFORMED, " [.123] " },
-    { Json::MALFORMED, " [1e\xe5] " },
-    { Json::MALFORMED, " [1ea] " },
-    { Json::MALFORMED, " [-1x] " },
-    { Json::MALFORMED, " [-.123] " },
-    { Json::MALFORMED, " [-foo] " },
-    { Json::MALFORMED, " [-Infinity] " },
-    { Json::MALFORMED, " \x5b\x30\xe5\x5d " },
-    { Json::MALFORMED, " \x5b\x31\x65\x31\xe5\x5d " },
-    { Json::MALFORMED, " \x5b\x31\x32\x33\xe5\x5d " },
-    { Json::MALFORMED,
-      " \x5b\x2d\x31\x32\x33\x2e\x31\x32\x33\x66\x6f\x6f\x5d " },
-    { Json::MALFORMED, " [0e+-1] " },
-    { Json::MALFORMED, " [Infinity] " },
-    { Json::MALFORMED, " [0x42] " },
-    { Json::MALFORMED, " [0x1] " },
-    { Json::MALFORMED, " [1+2] " },
-    { Json::MALFORMED, " \x5b\xef\xbc\x91\x5d " },
-    { Json::MALFORMED, " [NaN] " },
-    { Json::MALFORMED, " [Inf] " },
-    { Json::MALFORMED, " [9.e+] " },
-    { Json::MALFORMED, " [1eE2] " },
-    { Json::MALFORMED, " [1e0e] " },
-    { Json::MALFORMED, " [1.0e-] " },
-    { Json::MALFORMED, " [1.0e+] " },
-    { Json::MALFORMED, " [0e] " },
-    { Json::MALFORMED, " [0e+] " },
-    { Json::MALFORMED, " [0E] " },
-    { Json::MALFORMED, " [0E+] " },
-    { Json::MALFORMED, " [0.3e] " },
-    { Json::MALFORMED, " [0.3e+] " },
-    { Json::MALFORMED, " [0.1.2] " },
-    { Json::MALFORMED, " [.2e-3] " },
-    { Json::MALFORMED, " [.-1] " },
-    { Json::MALFORMED, " [-NaN] " },
-    { Json::MALFORMED, " [+Inf] " },
-    { Json::MALFORMED, " [+1] " },
-    { Json::MALFORMED, " [++1234] " },
-    { Json::MALFORMED, " [tru] " },
-    { Json::MALFORMED, " [nul] " },
-    { Json::MALFORMED, " [fals] " },
-    { Json::MALFORMED, " [{} " },
-    { Json::MALFORMED, "\n[1,\n1\n,1  " },
-    { Json::MALFORMED, " [1, " },
-    { Json::MALFORMED, " [\"\" " },
-    { Json::MALFORMED, " [* " },
-    { Json::MALFORMED,
-      " \x5b\x22\x0b\x61\x22\x5c\x66\x5d " },
-    { Json::MALFORMED, "[\"a\",\n4\n,1,1  " },
-    { Json::MALFORMED, " [1:2] " },
-    { Json::MALFORMED, " \x5b\xff\x5d " },
-    { Json::MALFORMED, " \x5b\x78 " },
-    { Json::MALFORMED, " [\"x\" " },
-    { Json::MALFORMED, " [\"\": 1] " },
-    { Json::MALFORMED, " [a\xe5] " },
-    { Json::MALFORMED, " {\"x\", null} " },
-    { Json::MALFORMED, " [\"x\", truth] " },
-    { Json::MALFORMED, STRING("\x00") },
-    { Json::MALFORMED, "\n[\"x\"]]" },
-    { Json::MALFORMED, " [012] " },
-    { Json::MALFORMED, " [-012] " },
-    { Json::MALFORMED, " [1 000.0] " },
-    { Json::MALFORMED, " [-01] " },
-    { Json::MALFORMED, " [- 1] " },
-    { Json::MALFORMED, " [-] " },
-    { Json::MALFORMED, " {\"\xb9\":\"0\",} " },
-    { Json::MALFORMED, " {\"x\"::\"b\"} " },
-    { Json::MALFORMED, " [1,,] " },
-    { Json::MALFORMED, " [1,] " },
-    { Json::MALFORMED, " [1,,2] " },
-    { Json::MALFORMED, " [,1] " },
-    { Json::MALFORMED, " [ 3[ 4]] " },
-    { Json::MALFORMED, " [1 true] " },
-    { Json::MALFORMED, " [\"a\" \"b\"] " },
-    { Json::MALFORMED, " [--2.] " },
-    { Json::MALFORMED, " [1.] " },
-    { Json::MALFORMED, " [2.e3] " },
-    { Json::MALFORMED, " [2.e-3] " },
-    { Json::MALFORMED, " [2.e+3] " },
-    { Json::MALFORMED, " [0.e1] " },
-    { Json::MALFORMED, " [-2.] " },
-    { Json::MALFORMED, " \xef\xbb\xbf{} " },
-    { Json::MALFORMED, STRING(" [\x00\"\x00\xe9\x00\"\x00]\x00 ") },
-    { Json::MALFORMED, STRING(" \x00[\x00\"\x00\xe9\x00\"\x00] ") },
-    { Json::SUCCESS, kHuge },
-    { Json::SUCCESS,
-      R"([[[[[[[[[[[[[[[[[[["Not too deep"]]]]]]]]]]]]]]]]]]])" },
-    { Json::SUCCESS, R"({
+    {ERROR_MALFORMED, ""},
+    {ERROR_MALFORMED, "[] []"},
+    {ERROR_MALFORMED, "[nan]"},
+    {ERROR_MALFORMED, "[-nan]"},
+    {ERROR_MALFORMED, "[+NaN]"},
+    {ERROR_MALFORMED, "{\"Extra value after close\": true} \"misplaced quoted value\""},
+    {ERROR_MALFORMED, "{\"Illegal expression\": 1 + 2}"},
+    {ERROR_MALFORMED, "{\"Illegal invocation\": alert()}"},
+    {ERROR_MALFORMED, "{\"Numbers cannot have leading zeroes\": 013}"},
+    {ERROR_MALFORMED, "{\"Numbers cannot be hex\": 0x14}"},
+    {ERROR_MALFORMED, "[\\naked]"},
+    {ERROR_MALFORMED, "[\"Illegal backslash escape: \\017\"]"},
+    {ERROR_MALFORMED, "[[[[[[[[[[[[[[[[[[[[\"Too deep\"]]]]]]]]]]]]]]]]]]]]"},
+    {ERROR_MALFORMED, "{\"Missing colon\" null}"},
+    {ERROR_MALFORMED, "{\"Double colon\":: null}"},
+    {ERROR_MALFORMED, "{\"Comma instead of colon\", null}"},
+    {ERROR_MALFORMED, "[\"Colon instead of comma\": false]"},
+    {ERROR_MALFORMED, "[\"Bad value\", truth]"},
+    {ERROR_MALFORMED, "[\'single quote\']"},
+    {ERROR_MALFORMED, "[\"tab\\   character\\   in\\  string\\  \"]"},
+    {ERROR_MALFORMED, "[\"line\\\nbreak\"]"},
+    {ERROR_MALFORMED, "[0e]"},
+    {ERROR_MALFORMED, "[\"Unclosed array\""},
+    {ERROR_MALFORMED, "[0e+]"},
+    {ERROR_MALFORMED, "[0e+-1]"},
+    {ERROR_MALFORMED, "{\"Comma instead if closing brace\": true,"},
+    {ERROR_MALFORMED, "[\"mismatch\"}"},
+    {ERROR_MALFORMED, "{unquoted_key: \"keys must be quoted\"}"},
+    {ERROR_MALFORMED, "[\"extra comma\",]"},
+    {ERROR_MALFORMED, "[\"double extra comma\",,]"},
+    {ERROR_MALFORMED, "[   , \"<-- missing value\"]"},
+    {ERROR_MALFORMED, "[\"Comma after the close\"],"},
+    {ERROR_MALFORMED, "[\"Extra close\"]]"},
+    {ERROR_MALFORMED, "{\"Extra comma\": true,}"},
+    {ERROR_MALFORMED, " {\"a\" "},
+    {ERROR_MALFORMED, " {\"a\": "},
+    {ERROR_MALFORMED, " {:\"b\" "},
+    {ERROR_MALFORMED, " {\"a\" b} "},
+    {ERROR_MALFORMED, " {key: 'value'} "},
+    {ERROR_MALFORMED, " {\"a\":\"a\" 123} "},
+    {ERROR_MALFORMED, " \x7b\xf0\x9f\x87\xa8\xf0\x9f\x87\xad\x7d "},
+    {ERROR_MALFORMED, " {[: \"x\"} "},
+    {ERROR_MALFORMED, " [1.8011670033376514H-308] "},
+    {ERROR_MALFORMED, " [1.2a-3] "},
+    {ERROR_MALFORMED, " [.123] "},
+    {ERROR_MALFORMED, " [1e\xe5] "},
+    {ERROR_MALFORMED, " [1ea] "},
+    {ERROR_MALFORMED, " [-1x] "},
+    {ERROR_MALFORMED, " [-.123] "},
+    {ERROR_MALFORMED, " [-foo] "},
+    {ERROR_MALFORMED, " [-Infinity] "},
+    {ERROR_MALFORMED, " \x5b\x30\xe5\x5d "},
+    {ERROR_MALFORMED, " \x5b\x31\x65\x31\xe5\x5d "},
+    {ERROR_MALFORMED, " \x5b\x31\x32\x33\xe5\x5d "},
+    {ERROR_MALFORMED, " \x5b\x2d\x31\x32\x33\x2e\x31\x32\x33\x66\x6f\x6f\x5d "},
+    {ERROR_MALFORMED, " [0e+-1] "},
+    {ERROR_MALFORMED, " [Infinity] "},
+    {ERROR_MALFORMED, " [0x42] "},
+    {ERROR_MALFORMED, " [0x1] "},
+    {ERROR_MALFORMED, " [1+2] "},
+    {ERROR_MALFORMED, " \x5b\xef\xbc\x91\x5d "},
+    {ERROR_MALFORMED, " [NaN] "},
+    {ERROR_MALFORMED, " [Inf] "},
+    {ERROR_MALFORMED, " [9.e+] "},
+    {ERROR_MALFORMED, " [1eE2] "},
+    {ERROR_MALFORMED, " [1e0e] "},
+    {ERROR_MALFORMED, " [1.0e-] "},
+    {ERROR_MALFORMED, " [1.0e+] "},
+    {ERROR_MALFORMED, " [0e] "},
+    {ERROR_MALFORMED, " [0e+] "},
+    {ERROR_MALFORMED, " [0E] "},
+    {ERROR_MALFORMED, " [0E+] "},
+    {ERROR_MALFORMED, " [0.3e] "},
+    {ERROR_MALFORMED, " [0.3e+] "},
+    {ERROR_MALFORMED, " [0.1.2] "},
+    {ERROR_MALFORMED, " [.2e-3] "},
+    {ERROR_MALFORMED, " [.-1] "},
+    {ERROR_MALFORMED, " [-NaN] "},
+    {ERROR_MALFORMED, " [+Inf] "},
+    {ERROR_MALFORMED, " [+1] "},
+    {ERROR_MALFORMED, " [++1234] "},
+    {ERROR_MALFORMED, " [tru] "},
+    {ERROR_MALFORMED, " [nul] "},
+    {ERROR_MALFORMED, " [fals] "},
+    {ERROR_MALFORMED, " [{} "},
+    {ERROR_MALFORMED, "\n[1,\n1\n,1  "},
+    {ERROR_MALFORMED, " [1, "},
+    {ERROR_MALFORMED, " [\"\" "},
+    {ERROR_MALFORMED, " [* "},
+    {ERROR_MALFORMED, " \x5b\x22\x0b\x61\x22\x5c\x66\x5d "},
+    {ERROR_MALFORMED, "[\"a\",\n4\n,1,1  "},
+    {ERROR_MALFORMED, " [1:2] "},
+    {ERROR_MALFORMED, " \x5b\xff\x5d "},
+    {ERROR_MALFORMED, " \x5b\x78 "},
+    {ERROR_MALFORMED, " [\"x\" "},
+    {ERROR_MALFORMED, " [\"\": 1] "},
+    {ERROR_MALFORMED, " [a\xe5] "},
+    {ERROR_MALFORMED, " {\"x\", null} "},
+    {ERROR_MALFORMED, " [\"x\", truth] "},
+    {ERROR_MALFORMED, STRING("\x00")},
+    {ERROR_MALFORMED, "\n[\"x\"]]"},
+    {ERROR_MALFORMED, " [012] "},
+    {ERROR_MALFORMED, " [-012] "},
+    {ERROR_MALFORMED, " [1 000.0] "},
+    {ERROR_MALFORMED, " [-01] "},
+    {ERROR_MALFORMED, " [- 1] "},
+    {ERROR_MALFORMED, " [-] "},
+    {ERROR_MALFORMED, " {\"\xb9\":\"0\",} "},
+    {ERROR_MALFORMED, " {\"x\"::\"b\"} "},
+    {ERROR_MALFORMED, " [1,,] "},
+    {ERROR_MALFORMED, " [1,] "},
+    {ERROR_MALFORMED, " [1,,2] "},
+    {ERROR_MALFORMED, " [,1] "},
+    {ERROR_MALFORMED, " [ 3[ 4]] "},
+    {ERROR_MALFORMED, " [1 true] "},
+    {ERROR_MALFORMED, " [\"a\" \"b\"] "},
+    {ERROR_MALFORMED, " [--2.] "},
+    {ERROR_MALFORMED, " [1.] "},
+    {ERROR_MALFORMED, " [2.e3] "},
+    {ERROR_MALFORMED, " [2.e-3] "},
+    {ERROR_MALFORMED, " [2.e+3] "},
+    {ERROR_MALFORMED, " [0.e1] "},
+    {ERROR_MALFORMED, " [-2.] "},
+    {ERROR_MALFORMED, " \xef\xbb\xbf{} "},
+    {ERROR_MALFORMED, STRING(" [\x00\"\x00\xe9\x00\"\x00]\x00 ")},
+    {ERROR_MALFORMED, STRING(" \x00[\x00\"\x00\xe9\x00\"\x00] ")},
+    {SUCCESS, kHuge},
+    {SUCCESS, R"([[[[[[[[[[[[[[[[[[["Not too deep"]]]]]]]]]]]]]]]]]]])"},
+    {SUCCESS, R"({
     "JSON Test Pattern pass3": {
         "The outermost value": "must be an object or array.",
         "In this test": "It is an object."
     }
 }
-)" },
+)"},
 };
 
-void
-estimate_size_test()
+void EstimateSizeTest()
 {
-    static const char* inputs[] = {
-        "null",
-        R"({"empty":[],"scalars":[null,true,false,0,-1],"nested":[["text"],{"key":"value"}]})",
-        R"({"key00":0,"key01":1,"key02":2,"key03":3,"key04":4,"key05":5,"key06":6,"key07":7,"key08":8,"key09":9,"key10":10,"key11":11,"key12":12,"key13":13,"key14":14,"key15":15,"key16":16})",
-        R"("escaped\nstring\uD834\uDD1E")",
-        "1.00000000000000011102230246251565404236316680908203125",
-        R"([[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]])",
-    };
-    if (Json::EstimateSize((const char*)nullptr, 0) || Json::EstimateSize((const char*)nullptr, 1) != SIZE_MAX ||
-        Json::EstimateSize("null") != Json::EstimateSize("null", 4))
-        exit(218);
-    for (size_t i = 0; i < ARRAYLEN(inputs); ++i) {
-        size_t size = strlen(inputs[i]);
-        size_t estimate = Json::EstimateSize(inputs[i], size);
-        flat::FixedJsonBuffer<64 * 1024> buffer;
-        if (estimate == SIZE_MAX || estimate > sizeof(buffer.bytes))
-            exit(219);
-        buffer.back = estimate;
-        if (Json::Parse(inputs[i], size, &buffer) != Json::SUCCESS)
-            exit(220);
-    }
+  static const char* inputs[] = {
+      "null",
+      R"({"empty":[],"scalars":[null,true,false,0,-1],"nested":[["text"],{"key":"value"}]})",
+      R"({"key00":0,"key01":1,"key02":2,"key03":3,"key04":4,"key05":5,"key06":6,"key07":7,"key08":8,"key09":9,"key10":10,"key11":11,"key12":12,"key13":13,"key14":14,"key15":15,"key16":16})",
+      R"("escaped\nstring\uD834\uDD1E")",
+      "1.00000000000000011102230246251565404236316680908203125",
+      R"([[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]])",
+  };
+  if (EstimateSize((const char*)nullptr, 0) || EstimateSize((const char*)nullptr, 1) != SIZE_MAX || EstimateSize("null") != EstimateSize("null", 4))
+    exit(218);
+
+  for (size_t i = 0; i < ARRAYLEN(inputs); ++i) {
+    size_t size     = strlen(inputs[i]);
+    size_t estimate = EstimateSize(inputs[i], size);
+    FixedArena<64 * 1024> bufferStorage;
+    Arena buffer     = bufferStorage;
+    const Node* bufferRoot = nullptr;
+    if (estimate == SIZE_MAX || estimate > sizeof(bufferStorage.bytes))
+      exit(219);
+    buffer.capacity = estimate;
+    if (ParseJSON(inputs[i], size, &buffer, &bufferRoot) != SUCCESS)
+      exit(220);
+  }
 }
 
-void
-round_trip_test()
+void RoundTripTest()
 {
-    for (size_t i = 0; i < ARRAYLEN(kRoundTrip); ++i) {
-        flat::FixedJsonBuffer<65536> a;
-        size_t inputSize = strlen(kRoundTrip[i].before);
-        size_t estimate = Json::EstimateSize(kRoundTrip[i].before, inputSize);
-        if (estimate == SIZE_MAX || estimate > sizeof(a.bytes))
-            exit(221);
-        a.back = estimate;
-        Json::Status status = Json::Parse(kRoundTrip[i].before, inputSize, &a);
-        if (status != Json::SUCCESS) {
-            printf(
-              "error: Json::Parse returned Json::%s but wanted Json::%s: %s\n",
-              Json::StatusToString(status),
-              Json::StatusToString(Json::SUCCESS),
-              kRoundTrip[i].before);
-            exit(10);
-        }
-        const Json* pJson = a.pRoot;
-        char got[65536];
-        if (pJson->ToString(got) != Json::SUCCESS)
-            exit(11);
-        if (strcmp(got, kRoundTrip[i].after)) {
-            printf("error: Json::Parse(%s).ToString() was %s but should have "
-                   "been %s\n",
-                   kRoundTrip[i].before,
-                   got,
-                   kRoundTrip[i].after);
-            exit(11);
-        }
+
+  for (size_t i = 0; i < ARRAYLEN(kRoundTrip); ++i) {
+    FixedArena<65536> aStorage;
+    Arena a     = aStorage;
+    const Node* aRoot = nullptr;
+    size_t inputSize  = strlen(kRoundTrip[i].before);
+    size_t estimate   = EstimateSize(kRoundTrip[i].before, inputSize);
+    if (estimate == SIZE_MAX || estimate > sizeof(aStorage.bytes))
+      exit(221);
+    a.capacity          = estimate;
+    Result status = ParseJSON(kRoundTrip[i].before, inputSize, &a, &aRoot);
+    if (status != SUCCESS) {
+      printf("error: ParseJSON returned Node::%s but wanted Node::%s: %s\n", string_Result(status), string_Result(SUCCESS), kRoundTrip[i].before);
+      exit(10);
     }
+    const Node* pJson = aRoot;
+    char got[65536];
+    if (pJson->ToString(got) != SUCCESS)
+      exit(11);
+    if (strcmp(got, kRoundTrip[i].after)) {
+      printf("error: ParseJSON(%s).ToString() was %s but should have "
+             "been %s\n",
+             kRoundTrip[i].before, got, kRoundTrip[i].after);
+      exit(11);
+    }
+  }
 }
 
-void
-json_test_suite()
+void JsonTestSuite()
 {
-    for (size_t i = 0; i < ARRAYLEN(kJsonTestSuite); ++i) {
-        flat::FixedJsonBuffer<256 * 1024> a;
-        size_t inputSize = kJsonTestSuite[i].size ? kJsonTestSuite[i].size : strlen(kJsonTestSuite[i].json);
-        if (kJsonTestSuite[i].error == Json::SUCCESS) {
-            size_t estimate = Json::EstimateSize(kJsonTestSuite[i].json, inputSize);
-            if (estimate == SIZE_MAX || estimate > sizeof(a.bytes))
-                exit(222);
-            a.back = estimate;
-        }
-        Json::Status status = Json::Parse(
-          kJsonTestSuite[i].json,
-          inputSize,
-          &a);
-        if (status != kJsonTestSuite[i].error) {
-            printf(
-              "error: Json::Parse returned Json::%s but wanted Json::%s: %s\n",
-              Json::StatusToString(status),
-              Json::StatusToString(kJsonTestSuite[i].error),
-              kJsonTestSuite[i].json);
-            exit(12);
-        }
+
+  for (size_t i = 0; i < ARRAYLEN(kJsonTestSuite); ++i) {
+    FixedArena<256 * 1024> aStorage;
+    Arena a     = aStorage;
+    const Node* aRoot = nullptr;
+    size_t inputSize  = kJsonTestSuite[i].size ? kJsonTestSuite[i].size : strlen(kJsonTestSuite[i].json);
+    if (kJsonTestSuite[i].error == SUCCESS) {
+      size_t estimate = EstimateSize(kJsonTestSuite[i].json, inputSize);
+      if (estimate == SIZE_MAX || estimate > sizeof(aStorage.bytes))
+        exit(222);
+      a.capacity = estimate;
     }
+    Result status = ParseJSON(kJsonTestSuite[i].json, inputSize, &a, &aRoot);
+    if (status != kJsonTestSuite[i].error) {
+      printf("error: ParseJSON returned Node::%s but wanted Node::%s: %s\n", string_Result(status), string_Result(kJsonTestSuite[i].error), kJsonTestSuite[i].json);
+      exit(12);
+    }
+  }
 }
 
-void
-afl_regression()
+void AflRegression()
 {
-    flat::FixedJsonBuffer<65536> a;
-    auto parse = [&](const char* pText) {
-        Json::Parse(pText, strlen(pText), &a);
-    };
-    parse("[{\"\":1,3:14,]\n");
-    parse(
-                "[\n"
-                "\n"
-                "3E14,\n"
-                "{\"!\":4,733:4,[\n"
-                "\n"
-                "3EL%,3E14,\n"
-                "{][1][1,,]");
-    parse(
-                "[\n"
-                "null,\n"
-                "1,\n"
-                "3.14,\n"
-                "{\"a\": \"b\",\n"
-                "3:14,ull}\n"
-                "]");
-    parse(
-                "[\n"
-                "\n"
-                "3E14,\n"
-                "{\"a!!!!!!!!!!!!!!!!!!\":4, \n"
-                "\n"
-                "3:1,,\n"
-                "3[\n"
-                "\n"
-                "]");
-    parse(
-                "[\n"
-                "\n"
-                "3E14,\n"
-                "{\"a!!:!!!!!!!!!!!!!!!\":4, \n"
-                "\n"
-                "3E1:4, \n"
-                "\n"
-                "3E1,,\n"
-                ",,\n"
-                "3[\n"
-                "\n"
-                "]");
-    parse(
-                "[\n"
-                "\n"
-                "3E14,\n"
-                "{\"!\":4,733:4,[\n"
-                "\n"
-                "3E1%,][1,,]");
-    parse(
-                "[\n"
-                "\n"
-                "3E14,\n"
-                "{\"!\":4,733:4,[\n"
-                "\n"
-                "3EL%,3E14,\n"
-                "{][1][1,,]");
+  FixedArena<65536> aStorage;
+  Arena a     = aStorage;
+  const Node* aRoot = nullptr;
+  auto parse        = [&](const char* pText) { ParseJSON(pText, strlen(pText), &a, &aRoot); };
+  parse("[{\"\":1,3:14,]\n");
+  parse("[\n"
+        "\n"
+        "3E14,\n"
+        "{\"!\":4,733:4,[\n"
+        "\n"
+        "3EL%,3E14,\n"
+        "{][1][1,,]");
+  parse("[\n"
+        "null,\n"
+        "1,\n"
+        "3.14,\n"
+        "{\"a\": \"b\",\n"
+        "3:14,ull}\n"
+        "]");
+  parse("[\n"
+        "\n"
+        "3E14,\n"
+        "{\"a!!!!!!!!!!!!!!!!!!\":4, \n"
+        "\n"
+        "3:1,,\n"
+        "3[\n"
+        "\n"
+        "]");
+  parse("[\n"
+        "\n"
+        "3E14,\n"
+        "{\"a!!:!!!!!!!!!!!!!!!\":4, \n"
+        "\n"
+        "3E1:4, \n"
+        "\n"
+        "3E1,,\n"
+        ",,\n"
+        "3[\n"
+        "\n"
+        "]");
+  parse("[\n"
+        "\n"
+        "3E14,\n"
+        "{\"!\":4,733:4,[\n"
+        "\n"
+        "3E1%,][1,,]");
+  parse("[\n"
+        "\n"
+        "3E14,\n"
+        "{\"!\":4,733:4,[\n"
+        "\n"
+        "3EL%,3E14,\n"
+        "{][1][1,,]");
 }
 
 #define HI_RESET "\033[0m" // green
@@ -1796,127 +1732,125 @@ static const char* const kParsingTests[] = {
     "y_structure_whitespace_array.json",
 };
 
-static const char*
-get_json_test_suite_path()
+static const char* getJsonTestSuitePath()
 {
-    FILE* file = fopen("JSONTestSuite/test_parsing/y_array_empty.json", "rb");
-    if (file) {
-        fclose(file);
-        return "JSONTestSuite/test_parsing/";
-    }
-    file = fopen("../JSONTestSuite/test_parsing/y_array_empty.json", "rb");
-    if (file) {
-        fclose(file);
-        return "../JSONTestSuite/test_parsing/";
-    }
-    JSON_PANIC("Could not find JSONTestSuite directory.");
+  FILE* file = fopen("JSONTestSuite/test_parsing/y_array_empty.json", "rb");
+  if (file) {
+    fclose(file);
+    return "JSONTestSuite/test_parsing/";
+  }
+  file = fopen("../JSONTestSuite/test_parsing/y_array_empty.json", "rb");
+  if (file) {
+    fclose(file);
+    return "../JSONTestSuite/test_parsing/";
+  }
+  DOC_PANIC("Could not find JSONTestSuite directory.");
 }
 
-static void
-json_test_suite_files()
+static void JsonTestSuiteFiles()
 {
-    int failures = 0;
-    flat::FixedJsonBuffer<1024 * 1024> arena;
-    const char* base_path = get_json_test_suite_path();
-    for (size_t i = 0; i < ARRAYLEN(kParsingTests); ++i) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s%s", base_path, kParsingTests[i]);
-        FILE* input = fopen(path, "rb");
-        JSON_REQUIRE(input, "Could not open JSONTestSuite input '%s'.", path);
-        JSON_REQUIRE(!fseek(input, 0, SEEK_END), "Could not seek JSONTestSuite input '%s'.", path);
-        long input_size = ftell(input);
-        JSON_REQUIRE(input_size >= 0, "Could not size JSONTestSuite input '%s'.", path);
-        rewind(input);
-        char* input_data = (char*)malloc((size_t)input_size + 1);
-        JSON_REQUIRE(input_data, "Could not allocate JSONTestSuite input '%s'.", path);
-        JSON_REQUIRE(fread(input_data, 1, (size_t)input_size, input) == (size_t)input_size,
-                    "Could not read JSONTestSuite input '%s'.", path);
-        fclose(input);
-        arena.back = sizeof(arena.bytes);
-        if (kParsingTests[i][0] == 'y') {
-            size_t estimate = Json::EstimateSize(input_data, (size_t)input_size);
-            JSON_REQUIRE(estimate != SIZE_MAX && estimate <= sizeof(arena.bytes),
-                         "JSON size estimate failed for '%s'.", path);
-            arena.back = estimate;
-        }
-        Json::Status status = Json::Parse(input_data, (size_t)input_size, &arena);
-        free(input_data);
-        const char* color = "";
-        const char* reason = "";
-        switch (kParsingTests[i][0]) {
-            case 'y':
-                if (status == Json::SUCCESS) {
-                    color = HI_GOOD;
-                    reason = "PASSED";
-                } else {
-                    color = HI_BAD;
-                    reason = "SHOULD_HAVE_PASSED";
-                    ++failures;
-                }
-                break;
-            case 'n':
-                if (status != Json::SUCCESS) {
-                    color = HI_GOOD;
-                    reason = "REJECTED";
-                } else {
-                    color = HI_BAD;
-                    reason = "SHOULD_HAVE_FAILED";
-                    ++failures;
-                }
-                break;
-            case 'i':
-                color = HI_OK;
-                reason = status == Json::SUCCESS ? "IMPLEMENTATION_PASS"
-                                                 : "IMPLEMENTATION_FAIL";
-                break;
-            default:
-                JSON_PANIC("Unknown JSONTestSuite test class.");
-        }
-        printf("%-70s %s%s%s", kParsingTests[i], color, reason, HI_RESET);
-        if (status != Json::SUCCESS)
-            printf(" (%s)", Json::StatusToString(status));
-        printf("\n");
+  int failures = 0;
+  FixedArena<1024 * 1024> arenaStorage;
+  Arena arena     = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  const char* basePath  = getJsonTestSuitePath();
+  for (size_t i = 0; i < ARRAYLEN(kParsingTests); ++i) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s%s", basePath, kParsingTests[i]);
+    FILE* input = fopen(path, "rb");
+    DOC_REQUIRE(input, "Could not open JSONTestSuite input '%s'.", path);
+    DOC_REQUIRE(!fseek(input, 0, SEEK_END), "Could not seek JSONTestSuite input '%s'.", path);
+    long inputSize = ftell(input);
+    DOC_REQUIRE(inputSize >= 0, "Could not size JSONTestSuite input '%s'.", path);
+    rewind(input);
+    char* inputData = (char*)malloc((size_t)inputSize + 1);
+    DOC_REQUIRE(inputData, "Could not allocate JSONTestSuite input '%s'.", path);
+    DOC_REQUIRE(fread(inputData, 1, (size_t)inputSize, input) == (size_t)inputSize, "Could not read JSONTestSuite input '%s'.", path);
+    fclose(input);
+    arena.Reset();
+    arena.capacity = sizeof(arenaStorage.bytes);
+    if (kParsingTests[i][0] == 'y') {
+      size_t estimate = EstimateSize(inputData, (size_t)inputSize);
+      DOC_REQUIRE(estimate != SIZE_MAX && estimate <= sizeof(arenaStorage.bytes), "JSON size estimate failed for '%s'.", path);
+      arena.capacity = estimate;
     }
-    if (failures)
-        exit(failures);
+    Result status = ParseJSON(inputData, (size_t)inputSize, &arena, &arenaRoot);
+    free(inputData);
+    const char* color  = "";
+    const char* reason = "";
+    switch (kParsingTests[i][0])
+    {
+      case 'y':
+        if (status == SUCCESS) {
+          color  = HI_GOOD;
+          reason = "PASSED";
+        } else {
+          color  = HI_BAD;
+          reason = "SHOULD_HAVE_PASSED";
+          ++failures;
+        }
+        break;
+      case 'n':
+        if (status != SUCCESS) {
+          color  = HI_GOOD;
+          reason = "REJECTED";
+        } else {
+          color  = HI_BAD;
+          reason = "SHOULD_HAVE_FAILED";
+          ++failures;
+        }
+        break;
+      case 'i':
+        color  = HI_OK;
+        reason = status == SUCCESS ? "IMPLEMENTATION_PASS" : "IMPLEMENTATION_FAIL";
+        break;
+      default:
+        DOC_PANIC("Unknown JSONTestSuite test class.");
+    }
+    printf("%-70s %s%s%s", kParsingTests[i], color, reason, HI_RESET);
+    if (status != SUCCESS)
+      printf(" (%s)", string_Result(status));
+    printf("\n");
+  }
+  if (failures)
+    exit(failures);
 }
 
-int
-main()
+int main()
 {
-    object_test();
-    direct_serialization_test();
-    public_soft_failure_test();
-    file_map_round_trip_test();
-    writable_file_round_trip_test();
-    large_object_index_test();
-    medium_object_lookup_test();
-    numeric_arena_test();
-    fast_decimal_differential_test();
-    strict_string_test();
-    generated_document_fuzz_test();
-    mutation_fuzz_test();
-    numeric_bit_pattern_fuzz_test();
-    output_boundary_canary_test();
-    object_threshold_fuzz_test();
-    embedded_nul_key_test();
-    nesting_and_rollback_fuzz_test();
-    immutable_layout_test();
-    deep_test();
-    static_arena_test();
-    stack_arena_test();
-    parse_test();
-    estimate_size_test();
-    round_trip_test();
-    afl_regression();
-    json_test_suite();
-    json_test_suite_files();
+  ObjectTest();
+  DirectSerializationTest();
+  PublicSoftFailureTest();
+  FileMapRoundTripTest();
+  WritableFileRoundTripTest();
+  LargeObjectIndexTest();
+  MediumObjectLookupTest();
+  NumericArenaTest();
+  FastDecimalDifferentialTest();
+  StrictStringTest();
+  GeneratedDocumentFuzzTest();
+  MutationFuzzTest();
+  NumericBitPatternFuzzTest();
+  OutputBoundaryCanaryTest();
+  ObjectThresholdFuzzTest();
+  EmbeddedNulKeyTest();
+  NestingAndRollbackFuzzTest();
+  ImmutableLayoutTest();
+  DeepTest();
+  StaticArenaTest();
+  StackArenaTest();
+  ParseTest();
+  EstimateSizeTest();
+  RoundTripTest();
+  AflRegression();
+  JsonTestSuite();
+  JsonTestSuiteFiles();
 
-    if (!getenv("FLAT_JSON_SKIP_BENCHMARKS")) {
-        BENCH(2000, 1, object_test());
-        BENCH(2000, 1, deep_test());
-        BENCH(2000, 1, parse_test());
-        BENCH(2000, 1, round_trip_test());
-        BENCH(2000, 1, json_test_suite());
-    }
+  if (!getenv("FLAT_JSON_SKIP_BENCHMARKS")) {
+    BENCH(2000, 1, ObjectTest());
+    BENCH(2000, 1, DeepTest());
+    BENCH(2000, 1, ParseTest());
+    BENCH(2000, 1, RoundTripTest());
+    BENCH(2000, 1, JsonTestSuite());
+  }
 }

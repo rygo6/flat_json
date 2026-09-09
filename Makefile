@@ -28,10 +28,15 @@ LDFLAGS = $(LDFLAT)
 BIN := bin
 OBJ := $(BIN)/obj
 
-.PHONY: benchmark benchmark-deps check clean fuzz tests
+.PHONY: benchmark benchmark-deps check clean fuzz fuzz-check tests
 .SECONDARY: $(OBJ)/fuzz.o $(OBJ)/tests.o
 
-check: $(BIN)/tests.ok
+check: $(BIN)/tests $(BIN)/fuzz $(BIN)/arena_capacity_regression
+	./$(BIN)/tests
+	./$(BIN)/arena_capacity_regression
+
+fuzz-check: $(BIN)/fuzz
+	sh tests/run_fuzz.sh ./$(BIN)/fuzz
 
 benchmark:
 	sh tests/run_benchmarks.sh
@@ -48,15 +53,15 @@ tests: $(BIN)/tests
 $(BIN) $(OBJ):
 	mkdir -p $@
 
-$(OBJ)/flat_json.o: flat_json.cpp flat_json.hpp flat_container.hpp flat_file.hpp | $(OBJ)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c -o $@ $<
+FLATLIB_SRCS := Document.cpp Container.cpp File.cpp Error.cpp Terminal.cpp Terminal_apple.cpp
+FLATLIB_OBJS := $(FLATLIB_SRCS:%.cpp=$(OBJ)/%.o)
+FLATLIB_HDRS := Document.hpp Container.hpp File.hpp Error.hpp Terminal.hpp Types.hpp flat_json.hpp
 
-$(OBJ)/%.o: tests/%.cpp flat_json.hpp flat_container.hpp flat_file.hpp | $(OBJ)
+$(OBJ)/%.o: %.cpp $(FLATLIB_HDRS) | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -I. -c -o $@ $<
 
-$(BIN)/%: $(OBJ)/%.o $(OBJ)/flat_json.o | $(BIN)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) -o $@ $^
+$(OBJ)/%.o: tests/%.cpp $(FLATLIB_HDRS) | $(OBJ)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -I. -c -o $@ $<
 
-$(BIN)/%.ok: $(BIN)/%
-	./$<
-	touch $@
+$(BIN)/%: $(OBJ)/%.o $(FLATLIB_OBJS) | $(BIN)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH) -o $@ $^

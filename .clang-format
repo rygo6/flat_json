@@ -1,13 +1,22 @@
----
-BasedOnStyle: Mozilla
-IndentWidth: 4
-ColumnLimit: 80
----
-Language: Cpp
-AllowShortFunctionsOnASingleLine: false
-AlignTrailingComments: false
-AlignEscapedNewlines: DontAlign
-AlwaysBreakTemplateDeclarations: true
-ConstructorInitializerAllOnOneLineOrOnePerLine: true
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 200
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: Never
+  AfterStruct: false
+  AfterEnum: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+BreakTemplateDeclarations: Yes
+AlignConsecutiveAssignments: Consecutive
+AlignTrailingComments: Never
+AlignEscapedNewlines: Left
+PointerAlignment: Left
+ReferenceAlignment: Left
+SortIncludes: Never
 FixNamespaceComments: true
----
+IndentCaseLabels: true

@@ -1,49 +1,51 @@
 #include "benchmark.hpp"
-#include "../flat_json.hpp"
+#include "../Document.hpp"
 
-struct FlatJsonBenchmark
-{
-  static constexpr const char* Name = "flat_json";
+using namespace Flat;
+using namespace Flat::Document;
+
+struct FlatJsonBenchmark {
+  static constexpr const char* Name              = "flat_json";
   static constexpr bool SupportsCompactSerialize = true;
-  static constexpr bool SupportsPrettySerialize = true;
-  static constexpr bool SupportsParse32Bit = true;
-  static constexpr bool SupportsParse64Bit = true;
+  static constexpr bool SupportsPrettySerialize  = true;
+  static constexpr bool SupportsParse32Bit       = true;
+  static constexpr bool SupportsParse64Bit       = true;
 
-  flat::FixedJsonBuffer<64 * 1024> arena;
-  const flat::Json* pRoot = nullptr;
-  const flat::Json* pArray = nullptr;
-  const flat::Json* pObject = nullptr;
-  const flat::Json* pInteger = nullptr;
-  const flat::Json* pFloating = nullptr;
-  const flat::Json* pString = nullptr;
+  FixedArena<64 * 1024> arenaStorage;
+  Arena arena           = arenaStorage;
+  const Node* arenaRoot = nullptr;
+  const Node* pRoot     = nullptr;
+  const Node* pArray    = nullptr;
+  const Node* pObject   = nullptr;
+  const Node* pInteger  = nullptr;
+  const Node* pFloating = nullptr;
+  const Node* pString   = nullptr;
 
   bool Prepare()
   {
-    if (flat::Json::Parse(benchmark::JsonText, benchmark::JsonSize, &arena) != flat::Json::SUCCESS)
+    if (ParseJSON(benchmark::JsonText, benchmark::JsonSize, &arena, &arenaRoot) != SUCCESS)
       return false;
-    pRoot = arena.pRoot;
-    pArray = &(*pRoot)["array"];
-    pObject = &(*pRoot)["object"];
-    pInteger = &(*pRoot)["integer"];
-    pFloating = &(*pRoot)["floating"];
-    pString = &(*pRoot)["string"];
-    flat::String string = pString->GetString();
-    return (*pArray)[benchmark::ArrayLookupIndex].GetLong() == benchmark::ArrayLookupValue &&
-           (*pObject)["target"].GetLong() == benchmark::ObjectLookupValue &&
-           pInteger->GetLong() == benchmark::IntegerValue &&
-           pFloating->GetDouble() == benchmark::FloatingValue &&
-           string.size == benchmark::StringSize &&
+    pRoot               = arenaRoot;
+    pArray              = &(*pRoot)["array"];
+    pObject             = &(*pRoot)["object"];
+    pInteger            = &(*pRoot)["integer"];
+    pFloating           = &(*pRoot)["floating"];
+    pString             = &(*pRoot)["string"];
+    String string = pString->GetString();
+    return (*pArray)[benchmark::ArrayLookupIndex].GetLong() == benchmark::ArrayLookupValue && (*pObject)["target"].GetLong() == benchmark::ObjectLookupValue &&
+           pInteger->GetLong() == benchmark::IntegerValue && pFloating->GetDouble() == benchmark::FloatingValue && string.size == benchmark::StringSize &&
            !memcmp(string.data, benchmark::StringValue, string.size);
   }
 
   bool ValidateParse32Bit()
   {
-    flat::FixedJsonBuffer<16 * 1024> parseArena;
-    if (flat::Json::Parse(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena) != flat::Json::SUCCESS)
+    FixedArena<16 * 1024> parseArenaStorage;
+    Arena parseArena           = parseArenaStorage;
+    const Node* parseArenaRoot = nullptr;
+    if (ParseJSON(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena, &parseArenaRoot) != SUCCESS)
       return false;
-    const flat::Json* pJson = parseArena.pRoot;
-    return pJson->GetSize() == 3 &&
-           benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
+    const Node* pJson = parseArenaRoot;
+    return pJson->GetSize() == 3 && benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
            benchmark::ValidateFloatRangeNumbers([&](size_t i) { return (*pJson)[1][i].GetDouble(); });
   }
 
@@ -51,10 +53,12 @@ struct FlatJsonBenchmark
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      flat::FixedJsonBuffer<16 * 1024> parseArena;
-      if (flat::Json::Parse(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena) != flat::Json::SUCCESS)
+      FixedArena<16 * 1024> parseArenaStorage;
+      Arena parseArena           = parseArenaStorage;
+      const Node* parseArenaRoot = nullptr;
+      if (ParseJSON(benchmark::Parse32BitJsonText, benchmark::Parse32BitJsonSize, &parseArena, &parseArenaRoot) != SUCCESS)
         abort();
-      const flat::Json* pJson = parseArena.pRoot;
+      const Node* pJson = parseArenaRoot;
       result += pJson->GetSize();
       benchmark::DoNotOptimize(pJson);
     }
@@ -63,26 +67,27 @@ struct FlatJsonBenchmark
 
   bool ValidateParse64Bit()
   {
-    flat::FixedJsonBuffer<16 * 1024> parseArena;
-    if (flat::Json::Parse(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena) != flat::Json::SUCCESS)
+    FixedArena<16 * 1024> parseArenaStorage;
+    Arena parseArena           = parseArenaStorage;
+    const Node* parseArenaRoot = nullptr;
+    if (ParseJSON(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena, &parseArenaRoot) != SUCCESS)
       return false;
-    const flat::Json* pJson = parseArena.pRoot;
-    return pJson->GetSize() == 5 &&
-           benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
+    const Node* pJson = parseArenaRoot;
+    return pJson->GetSize() == 5 && benchmark::ValidateInt32Numbers([&](size_t i) { return (*pJson)[0][i].GetLong(); }) &&
            benchmark::ValidateFloatRangeNumbers([&](size_t i) { return (*pJson)[1][i].GetDouble(); }) &&
-           benchmark::ValidateExactNumbers(
-             [&](size_t i) { return (*pJson)[2][i].GetLong(); },
-             [&](size_t i) { return (*pJson)[3][i].GetDouble(); });
+           benchmark::ValidateExactNumbers([&](size_t i) { return (*pJson)[2][i].GetLong(); }, [&](size_t i) { return (*pJson)[3][i].GetDouble(); });
   }
 
   uint64_t Parse64Bit(size_t iterations)
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      flat::FixedJsonBuffer<16 * 1024> parseArena;
-      if (flat::Json::Parse(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena) != flat::Json::SUCCESS)
+      FixedArena<16 * 1024> parseArenaStorage;
+      Arena parseArena           = parseArenaStorage;
+      const Node* parseArenaRoot = nullptr;
+      if (ParseJSON(benchmark::Parse64BitJsonText, benchmark::Parse64BitJsonSize, &parseArena, &parseArenaRoot) != SUCCESS)
         abort();
-      const flat::Json* pJson = parseArena.pRoot;
+      const Node* pJson = parseArenaRoot;
       result += pJson->GetSize();
       benchmark::DoNotOptimize(pJson);
     }
@@ -94,7 +99,7 @@ struct FlatJsonBenchmark
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
       char pJsonText[64 * 1024];
-      if (flat::WriteJson(*pRoot, pJsonText) != flat::Json::SUCCESS)
+      if (WriteJSON(*pRoot, pJsonText) != SUCCESS)
         abort();
       result += (unsigned char)pJsonText[0] + (unsigned char)pJsonText[1];
       benchmark::DoNotOptimize(pJsonText);
@@ -107,7 +112,7 @@ struct FlatJsonBenchmark
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
       char output[64 * 1024];
-      if (flat::WriteJsonPretty(*pRoot, output) != flat::Json::SUCCESS)
+      if (WriteJSONPretty(*pRoot, output) != SUCCESS)
         abort();
       result += (unsigned char)output[0] + (unsigned char)output[1];
       benchmark::DoNotOptimize(output);
@@ -163,7 +168,7 @@ struct FlatJsonBenchmark
   {
     uint64_t result = 0;
     for (size_t i = 0; i < iterations; ++i) {
-      flat::String value = pString->GetString();
+      String value = pString->GetString();
       benchmark::DoNotOptimize(value.data);
       benchmark::DoNotOptimize(value.size);
       result += benchmark::StringChecksum(value.data, value.size);

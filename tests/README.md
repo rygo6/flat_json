@@ -1,4 +1,119 @@
-# JSON library benchmarks
+# Tests and benchmarks
+
+Run correctness tests and replay the complete fuzz corpus from the repository root:
+
+```sh
+make check
+make fuzz-check
+```
+
+`make check` includes deterministic generated documents, numeric differential
+checks, output canaries, arena relocation and rollback, file round trips, and
+all 318 JSONTestSuite parsing files. It also builds the fuzz harness so API
+changes cannot leave that target broken. Set `FLAT_JSON_SKIP_BENCHMARKS=1` to
+skip only the small timing loops at the end of the unit executable.
+
+The corpus runner accepts exit codes 0 (accepted JSON) and 1 (rejected JSON).
+It stops on a crash or any other exit code and prints the failing seed and log.
+The runner requests fatal ASan/UBSan failures with exit 86; sanitizer abort
+signals are also failures. Neither is treated as a normal rejected input. UBSan reproduction:
+
+```sh
+make -B BIN=bin/ubsan OBJ=bin/ubsan/obj \
+  CXXFLAGS='-std=c++23 -O1 -g -DDEBUG -fno-exceptions -fno-rtti -fsanitize=undefined -fno-sanitize-recover=all -Wno-c99-designator -Wno-c23-extensions -Wno-vla-cxx-extension -Wno-address-of-temporary -Wno-missing-field-initializers' \
+  LDFLAGS=-fsanitize=undefined check fuzz-check
+```
+
+For ASan, use a separate `bin/asan` directory, substitute
+`-fsanitize=address,undefined` in both flag sets, and add
+`-fno-omit-frame-pointer`. The current tests, fuzz harness, and arena regression
+all build with ASan+UBSan, but each times out after eight seconds during ASan
+initialization. No ASan test or corpus pass is claimed; see the diagnosis below.
+
+Vendored README files under `JSONTestSuite/` describe its upstream parser adapters.
+Local packaging differences are listed in `JSONTestSuite/README.vendor`; test
+vectors and upstream licenses are preserved.
+
+## Current validation
+
+On 2026-09-09, clean rebuilds of the current `Flat::Document` sources passed
+the native and UBSan unit suites, capacity regressions, and both 2,304-seed
+corpus replays. The x86-64 build, unit suite, and full corpus replay also
+passed under Rosetta. All eight benchmark adapters completed; current timings
+are in the [main README](../README.md#benchmarks).
+
+All six linked FlatLib implementation files and the owned test executables
+also pass `-Wall -Wextra -Werror` with FlatLib's documented GNU-extension flags.
+All 13 README C++ snippets compile and link against those same implementation files.
+
+## ASan startup deadlock
+
+On macOS 26.5.1 with Apple Clang 17.0.0 (`clang-1700.6.3.2`), even a minimal
+C program hangs before `main`, both inside and outside the execution sandbox.
+A process sample identifies recursive ASan initialization:
+
+```text
+AsanInitInternal -> InitializeShadowMemory -> get_dyld_hdr
+  -> dyld_shared_cache_iterate_text_swift -> _Block_copy -> malloc
+  -> AsanInitFromRtl -> StaticSpinMutex::LockSlow
+```
+
+The loader allocates while ASan is initializing; the allocation interceptor
+re-enters initialization and waits on the lock already held by that same thread.
+This is a runtime deadlock, not a slow JSON test or a finding in flat_json.
+Increasing the timeout does not resolve it. LLVM's
+[upstream fix](https://github.com/llvm/llvm-project/pull/182943) uses the
+non-allocating `_dyld_get_dyld_header` path; it was also
+[backported to release/22.x](https://github.com/llvm/llvm-project/pull/188913).
+ASan validation requires a compiler/runtime containing that fix.
+
+## Arena capacity regression
+
+`make check` includes `arena_capacity_regression.cpp`. It checks two documents
+at every capacity from 0 through 16,384 bytes, including nested objects and arrays.
+Successful parses must serialize back identically; insufficient space must
+clear the root and leave the cursor unchanged. It also checks invalid arena
+arguments and parsing a long decimal with only a 64-byte arena.
+
+The 106-byte `{"a":1,"b":2}` case requires the backward object index allocation
+to reject overlap with live front scratch. It passes natively, under UBSan,
+and under x86-64 Rosetta.
+
+Run it independently with:
+
+```sh
+make bin/arena_capacity_regression
+./bin/arena_capacity_regression
+```
+
+Numeric conversion uses fixed stack scratch rather than reserving arena capacity.
+
+## Historical CODESTYLE performance comparison
+
+These measurements precede the migration to the full `Flat::Document` sources.
+Use the main README benchmark table for the current implementation.
+
+The 2026-09-09 pass was compared with a filesystem snapshot of the user's
+pre-pass working tree; no user changes were stashed or removed. Both binaries
+used the same benchmark harness and `-O3 -DNDEBUG`. Three alternating paired
+runs produced these medians of the reported seven-sample measurements:
+
+| Workload | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Parse 32-bit | 466.3 ns | 489.9 ns | +5.1% |
+| Parse with 64-bit | 1046.6 ns | 1054.7 ns | +0.8% |
+| Compact serialization | 1159.2 ns | 1170.2 ns | +0.9% |
+| Pretty serialization | 1273.8 ns | 1270.2 ns | -0.3% |
+| Object lookup | 6.7 ns | 6.7 ns | unchanged |
+
+This comparison includes the scratch-overlap fix and arena argument validation,
+not just formatting. The unchecked baseline has a reproducible correctness bug.
+The 32-bit parse increase is measurable; the other differences are small enough
+that this short run does not establish a regression. The small shared workload
+does not measure the new large-object heapsort's performance; lookup-threshold
+and generated-document tests validate its ordering.
+
+## Benchmark comparison
 
 Run the complete comparison from the repository root:
 
@@ -70,9 +185,10 @@ The serialization columns measure converting typed binary values to JSON text.
 niXman/flatjson retains parsed scalar values as source text and copies that text
 during serialization, so it is reported as `N/A*`.
 
-## Serialization ablations
+## Historical serialization ablations
 
-Each change below was measured alone against the immediately preceding build.
+These observations describe the 2026-08-16 implementation, before the current
+parser and style changes. Each change below was measured alone against the immediately preceding build.
 Retained changes passed `make check` before the next experiment.
 
 | Retained change | Observed effect |
