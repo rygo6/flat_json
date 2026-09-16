@@ -129,6 +129,13 @@ The parser accepts up to 19 nested arrays or objects; deeper input returns
 
 ### Try accessors
 
+Ordinary `Get*()` methods validate their preconditions only with assertions.
+When `DEBUG` is not defined, those assertions compile out completely and add no
+runtime validation cost. This is a Flat C++ semantic: callers choose which
+checks remain in release builds by using `Try*()` methods, or by explicitly
+testing `Is*()` and `Has*()` predicates before accessing a value. These explicit
+checks remain active independently of `DEBUG`.
+
 Every typed getter has a `Try` form taking a member key and an output pointer.
 It returns false when the key is absent or the value is the wrong type, and the
 output is left untouched — so pre-loaded defaults survive an absent member:
