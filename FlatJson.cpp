@@ -1,10 +1,120 @@
-#include "FlatJson.hpp"
-
 ////////////////////////////////////////////////////////////////////////////////
 // @author rygo6
-// Error.cpp - Enumerator names for Result codes.
+// FlatJson.cpp - Flat, caller-owned arena JSON parsing and serialization.
+////////////////////////////////////////////////////////////////////////////////
+//
+// Copyright 2006-2011, the V8 project authors (google/double-conversion, BSD-3-Clause)
+// Copyright 2021 The fast_float authors (fastfloat/fast_float, MIT)
+// Copyright 2022 Justine Alexandra Roberts Tunney (Cosmopolitan tool/net/ljson.c, ISC)
+// Copyright 2024 Mozilla Foundation (jart/json.cpp C++ port, Apache-2.0)
+// Copyright 2026 rygo6 (flat_json and FlatLib, Apache-2.0)
+//
+// Project lineage:
+//   - Cosmopolitan tool/net/ljson.c (2022), by Justine Tunney and
+//     Gautham Venkatasubramanian.
+//   - The Mozilla-sponsored C++ port used by Mozilla-Ocho/llamafile and
+//     published as jart/json.cpp by Justine Tunney and contributors (2024).
+//   - This immutable flat-arena parse/serialization derivative by rygo6 (2026),
+//     amalgamated with rygo6's FlatLib Types, Error, Container, and File sources.
+//
+// Third-party code embedded in FlatJson.cpp:
+//   - google/double-conversion, commit 75b48d66ac835da2c1678926f7d61d6cb2992922
+//     (2024-05-21), BSD-3-Clause. Local changes retained while amalgamating:
+//       * remove internal quoted includes after dependency-order amalgamation;
+//       * retain only shortest float/double formatting and JSON decimal parsing;
+//       * write digits directly in the flat arena and use its uncommitted tail
+//         for exact bignum workspace instead of stack or heap buffers;
+//       * use one exact conversion path on x86-64 and ARM64, without
+//         architecture-dependent floating-point shortcuts;
+//       * compact the retained implementation into one double_conversion
+//         namespace.
+//   - fastfloat/fast_float 8.2.3, the Eisel-Lemire binary64 subset, MIT.
+//   - chadaustin/sajson informed the object-lookup policy; no sajson source is
+//     included.
+//
+// See THIRD_PARTY_NOTICES.md for complete provenance.
+//
+// flat_json, the Mozilla C++ port, and FlatLib are licensed under the Apache
+// License, Version 2.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Cosmopolitan tool/net/ljson.c, ISC license:
+//
+// Copyright 2022 Justine Alexandra Roberts Tunney
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+// REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+// AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+// INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+// LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+// OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+// PERFORMANCE OF THIS SOFTWARE.
+//
+// google/double-conversion, BSD-3-Clause license:
+//
+// Copyright 2006-2011, the V8 project authors. All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//     * Neither the name of Google Inc. nor the names of its
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// fastfloat/fast_float, MIT license:
+//
+// Copyright 2021 The fast_float authors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 ////////////////////////////////////////////////////////////////////////////////
 
+#include "FlatJson.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////
 namespace Flat {
@@ -51,450 +161,12 @@ namespace Flat {
 }  // namespace Flat
 ////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// term.cpp
-////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-#include <unistd.h>
-#include <time.h>
-#include <stdlib.h>
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <termios.h>
-#include <array>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat::Terminal {
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// Status line + terminal input
-//  StatusBar targets a fixed bottom row; normal stderr scrolls above. Raw
-//  stdin (set up here) lets PollKey/PollMouse poll the controlling
-//  terminal for input without a window.
-////////////////////////////////////////////////////////////////////////////////
-
-static struct {
-  bool statusIsTty  = false;
-  int  statusRows   = 0;
-  bool stdinRaw     = false;
-  bool mouseOn      = false;
-  struct termios savedStdin = {};
-  FILE* logFile     = nullptr;
-  char  logDir[512] = {};
-} term;
-
-template <size_t N>
-static void WriteRaw(const char (&text)[N]) { (void)write(STDERR_FILENO, text, N - 1); }
-
-///////////////////////////////////////////////////////
-// Reset
-//  Destructor: restore stdin termios, disable mouse reporting, and clear the
-//  scroll region so the shell prompt isn't constrained. Runs on normal exit(0) /
-//  return-from-main; skipped by _exit().
-///////////////////////////////////////////////////////
-void Reset() {
-  if (term.logFile) { fclose(term.logFile); term.logFile = nullptr; }
-  if (term.stdinRaw) { tcsetattr(STDIN_FILENO, TCSANOW, &term.savedStdin); term.stdinRaw = false; }
-  if (term.mouseOn)  { fputs("\033[?1003l\033[?1006l", stderr); term.mouseOn = false; }
-  if (term.statusIsTty) {
-    // \e[r resets DECSTBM to full screen; move to status row and clear it so the
-    // shell prompt overwrites it cleanly instead of scrolling it into history.
-    fprintf(stderr, "\033[r\033[%d;1H\033[2K", term.statusRows);
-  }
-  fflush(stderr);
-}
-
-///////////////////////////////////////////////////////
-// ResetSignalSafe
-//  Restores terminal state from signal context without calling stdio.
-///////////////////////////////////////////////////////
-void ResetSignalSafe() {
-  if (term.stdinRaw)
-    tcsetattr(STDIN_FILENO, TCSANOW, &term.savedStdin);
-
-  if (term.statusIsTty)
-    WriteRaw("\033[?1003l\033[?1006l\033[r");
-}
-
-///////////////////////////////////////////////////////
-// QueryCursorRow
-//  Asks the terminal where the cursor is (DSR) so init can resume output at the prompt.
-//  Needs raw stdin for the reply; 0 on no/garbled reply. Discards any typeahead it drains.
-///////////////////////////////////////////////////////
-static int QueryCursorRow() {
-  if (!term.stdinRaw)
-    return 0;
-
-  fprintf(stderr, "\033[6n");
-  fflush(stderr);
-
-  char reply[64];
-  int  length = 0;
-  for (int waitedMs = 0; waitedMs < 100;) {
-    pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
-    if (poll(&pfd, 1, 10) <= 0) { waitedMs += 10; continue; }
-
-    int bytes = (int)read(STDIN_FILENO, reply + length, sizeof(reply) - 1 - (size_t)length);
-    if (bytes <= 0) { waitedMs += 10; continue; }
-    length += bytes;
-    reply[length] = 0;
-
-    const char* pReport = strstr(reply, "\033[");
-    while (pReport) {
-      int  row = 0, column = 0;
-      char terminator = 0;
-      if (sscanf(pReport + 2, "%d;%d%c", &row, &column, &terminator) == 3 && terminator == 'R')
-        return row;
-      pReport = strstr(pReport + 1, "\033[");
-    }
-    if (length >= (int)sizeof(reply) - 1)
-      return 0;
-  }
-  return 0;
-}
-
-///////////////////////////////////////////////////////
-// FatalSignal
-//  Restores the terminal before preserving the fatal signal and core-dump behavior.
-///////////////////////////////////////////////////////
-static void FatalSignal(const int signalNumber) {
-  ResetSignalSafe();
-  signal(signalNumber, SIG_DFL);
-  raise(signalNumber);
-}
-
-///////////////////////////////////////////////////////
-// TerminalStatusInit
-//  Constructor: runs before main(). Sets raw stdin (for input polling), detects
-//  the stderr TTY, sets DECSTBM, installs signal handlers, registers Reset via atexit.
-///////////////////////////////////////////////////////
-[[gnu::constructor]]
-static void TerminalStatusInit() {
-#if defined(FLAT_SHARED_LIB)
-  // Dlopen'd into a host app: the tty and the signal handlers are the host's, and dlclose would
-  // leave every handler installed here pointing at unmapped code.
-  return;
-#endif
-  // Raw stdin: single-key / mouse polling. Keep ISIG so Ctrl-C still raises SIGINT.
-  // VMIN=0/VTIME=0 -> read() returns 0 immediately when no input is pending.
-  if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &term.savedStdin) == 0) {
-    struct termios raw = term.savedStdin;
-    raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
-    raw.c_cc[VMIN]  = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) term.stdinRaw = true;
-  }
-
-  term.statusIsTty = isatty(fileno(stderr));
-  winsize ws = {};
-  if (term.statusIsTty && (ioctl(fileno(stderr), TIOCGWINSZ, &ws) != 0 || ws.ws_row < 4))
-    term.statusIsTty = false;
-  if (term.statusIsTty) {
-    term.statusRows = ws.ws_row;
-    // Reserve last row; scroll region = 1..(H-1). DECSTBM homes the cursor, so put it back where
-    // the prompt left it (clamped into the region) instead of parking at the bottom — parking
-    // painted a screen-height gap of blank rows between the prompt and the first log line.
-    int cursorRow = QueryCursorRow();
-    int parkRow   = (cursorRow > 0 && cursorRow < term.statusRows - 1) ? cursorRow : term.statusRows - 1;
-    fprintf(stderr, "\033[1;%dr\033[%d;1H", term.statusRows - 1, parkRow);
-    // On the region floor the row still holds the prompt's last line; scroll once off of it.
-    if (cursorRow >= term.statusRows)
-      fprintf(stderr, "\n");
-    fflush(stderr);
-  }
-
-  constexpr std::array kFatalSignals = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGQUIT, SIGHUP, SIGINT, SIGTERM, SIGABRT, SIGTRAP };
-  for (int signalNumber : kFatalSignals)
-    signal(signalNumber, FatalSignal);
-
-  atexit(Reset);
-}
-
-///////////////////////////////////////////////////////
-// Input drain + parse
-//  One read of pending stdin bytes, split into a key queue + a mouse queue. Mouse
-//  reports are xterm SGR (1006): ESC '[' '<' b ';' x ';' y ('M'|'m'). Everything
-//  else is a key byte. Partial sequences at the buffer tail are kept for next call.
-///////////////////////////////////////////////////////
-static unsigned char  s_raw[256];
-static int            s_rawLen = 0;
-static int            s_keyQ[128];
-static int            s_keyHead = 0, s_keyTail = 0;
-static MouseEvent s_mouseQ[128];
-static int            s_mHead = 0, s_mTail = 0;
-
-static constexpr int KEYQ_N   = (int)(sizeof(s_keyQ)   / sizeof(s_keyQ[0]));
-static constexpr int MOUSEQ_N = (int)(sizeof(s_mouseQ) / sizeof(s_mouseQ[0]));
-
-static void PushKey(int c)               { int n = (s_keyTail + 1) % KEYQ_N;   if (n != s_keyHead) { s_keyQ[s_keyTail] = c; s_keyTail = n; } }
-static void PushMouse(const MouseEvent& e) { int n = (s_mTail + 1) % MOUSEQ_N; if (n != s_mHead)  { s_mouseQ[s_mTail] = e; s_mTail = n; } }
-
-static void Drain() {
-  if (!term.stdinRaw) return;
-
-  if (s_rawLen < (int)sizeof(s_raw)) {
-    ssize_t n = read(STDIN_FILENO, s_raw + s_rawLen, sizeof(s_raw) - s_rawLen);
-    if (n > 0) s_rawLen += (int)n;
-  }
-
-  int i = 0;
-  while (i < s_rawLen) {
-    unsigned char c = s_raw[i];
-
-    if (c == 0x1b) {
-      bool haveHdr = (i + 2 < s_rawLen);
-      if (!haveHdr && s_rawLen < (int)sizeof(s_raw)) break;   // maybe a sequence; wait for more bytes
-
-      if (haveHdr && s_raw[i + 1] == '[' && s_raw[i + 2] == '<') {
-        // SGR mouse: parse b ; x ; y (M|m).
-        int j = i + 3, vals[3] = { 0, 0, 0 }, vi = 0; char tc = 0; bool done = false, bad = false;
-        while (j < s_rawLen) {
-          char d = (char)s_raw[j++];
-          if      (d >= '0' && d <= '9') vals[vi] = vals[vi] * 10 + (d - '0');
-          else if (d == ';')             { if (vi < 2) vi++; }
-          else if (d == 'M' || d == 'm') { tc = d; done = true; break; }
-          else                           { bad = true; break; }
-        }
-        if (!done && !bad) {
-          if (s_rawLen < (int)sizeof(s_raw)) break;   // terminator not here yet; keep bytes for next drain
-          // buffer full with no terminator (pathological) — give up, emit ESC as a key below.
-        }
-        if (done) {
-          int b = vals[0];
-          MouseEvent e;
-          e.x = vals[1]; e.y = vals[2];
-          e.button = b & 0x3;
-          e.motion = (b & 0x20) != 0;
-          e.pressed = (tc == 'M');
-          PushMouse(e);
-          i = j;
-          continue;
-        }
-        // bad: not a real mouse seq — fall through and emit ESC as a key byte.
-      }
-      // ESC that isn't a mouse header (or buffer full): emit it as a key byte.
-    }
-
-    PushKey(c);
-    i++;
-  }
-
-  if (i > 0) { memmove(s_raw, s_raw + i, s_rawLen - i); s_rawLen -= i; }
-}
-
-int PollKey() {
-  Drain();
-  if (s_keyHead == s_keyTail) return -1;
-  int c = s_keyQ[s_keyHead];
-  s_keyHead = (s_keyHead + 1) % KEYQ_N;
-  return c;
-}
-
-bool PollMouse(MouseEvent* out) {
-  Drain();
-  if (s_mHead == s_mTail) return false;
-  if (out) *out = s_mouseQ[s_mHead];
-  s_mHead = (s_mHead + 1) % MOUSEQ_N;
-  return true;
-}
-
-void EnableMouse() {
-  if (!term.stdinRaw || term.mouseOn) return;   // need raw stdin to read the reports back
-  term.mouseOn = true;
-  fputs("\033[?1003h\033[?1006h", stderr);   // 1003 = any-motion tracking, 1006 = SGR coords
-  fflush(stderr);
-}
-
-void DisableMouse() {
-  if (!term.mouseOn) return;
-  term.mouseOn = false;
-  fputs("\033[?1003l\033[?1006l", stderr);
-  fflush(stderr);
-}
-
-///////////////////////////////////////////////////////
-// StatusBar
-//  Writes the formatted message to the fixed status row.
-///////////////////////////////////////////////////////
-void StatusBar(const char* fmt, ...) {
-  flockfile(stderr);  // serialize with concurrent stderr writers
-
-  if (!term.statusIsTty) {
-    // Non-TTY: degrade to a regular line; prefix retained as a tag.
-    fputs("[STATS] ", stderr);
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    funlockfile(stderr);
-    return;
-  }
-
-  // Re-query rows for SIGWINCH-free resize handling.
-  winsize ws = {};
-  if (ioctl(fileno(stderr), TIOCGWINSZ, &ws) == 0 && ws.ws_row >= 4 && ws.ws_row != term.statusRows) {
-    term.statusRows = ws.ws_row;
-    fprintf(stderr, "\033[1;%dr", term.statusRows - 1);  // resync scroll region
-  }
-
-  // Save cursor, jump to status row, clear line, write prefix + message, restore cursor.
-  fprintf(stderr, "\0337\033[%d;1H\033[2K", term.statusRows);
-  fputs(ANSI_BG_RGB(40, 80, 160) ANSI_FG_BRIGHT_WHITE ANSI_BOLD " [STATS] " ANSI_RESET " ", stderr);
-  va_list ap;
-  va_start(ap, fmt);
-  vfprintf(stderr, fmt, ap);
-  va_end(ap);
-  fputs("\0338", stderr);
-  fflush(stderr);
-
-  funlockfile(stderr);
-}
-
-///////////////////////////////////////////////////////
-// LogOpenFileAt
-//  Opens and rotates the log file at a platform-selected directory.
-///////////////////////////////////////////////////////
-void LogOpenFileAt(const char* dir, const char* appName)
-{
-  mkdir(dir, 0755);
-  snprintf(term.logDir, sizeof(term.logDir), "%s", dir);
-
-  char path[600], prevPath[640];
-  snprintf(path, sizeof(path), "%s/%s.log", dir, appName);
-  snprintf(prevPath, sizeof(prevPath), "%s/%s-prev.log", dir, appName);
-  rename(path, prevPath);
-
-  term.logFile = fopen(path, "w");
-  if (term.logFile) fprintf(stderr, "log file: %s\n", path);
-  else              fprintf(stderr, "log file open failed: %s\n", path);
-}
-
-const char* LogDir() { return term.logDir; }
-
-///////////////////////////////////////////////////////
-// StripAnsi
-//  Removes terminal color sequences before mirroring a record to disk.
-///////////////////////////////////////////////////////
-static int StripAnsi(const char* source, int length, int capacity, char* pOutput) {
-  int read = 0;
-  int written = 0;
-  while (read < length && written < capacity) {
-    if ((unsigned char)source[read] == 0x1b && read + 1 < length && source[read + 1] == '[') {
-      read += 2;
-      while (read < length) {
-        unsigned char c = (unsigned char)source[read++];
-        if (c >= 0x40 && c <= 0x7e)
-          break;
-      }
-
-      continue;
-    }
-
-    pOutput[written++] = source[read++];
-  }
-
-  return written;
-}
-
-///////////////////////////////////////////////////////
-// Log
-//  Writes a colored log record to stderr and a plain-text copy to the optional file mirror.
-///////////////////////////////////////////////////////
-void Log(const char* file, int filePad, int line, const char* tag, const char* fmt, ...) {
-  char buf[2048];   // sized so multi-line framed warnings fit in a single call
-  int n = snprintf(buf, sizeof(buf),
-    ANSI_FG_RGB(0,0,64) "%s" ANSI_FG_RGB(0,0,0) ":" ANSI_FG_RGB(0,64,0) "%-*d" "%s",
-    file, filePad, line, tag);
-  va_list args;
-  va_start(args, fmt);
-  n += vsnprintf(buf + n, sizeof(buf) - n, fmt, args);
-  va_end(args);
-  n = n < (int)sizeof(buf) ? n : (int)sizeof(buf);
-  fwrite(buf, 1, n, stderr);
-
-  if (term.logFile) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    struct tm tm;
-    localtime_r(&ts.tv_sec, &tm);
-
-    char plain[2048];
-    int plainLength = StripAnsi(buf, n, sizeof(plain), plain);
-    fprintf(term.logFile, "%02d:%02d:%02d.%03d %.*s", tm.tm_hour, tm.tm_min, tm.tm_sec, (int)(ts.tv_nsec / 1000000), plainLength, plain);
-    fflush(term.logFile);
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat::Terminal
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// term_apple.cpp
-////////////////////////////////////////////////////////////////////////////////
-
-
-#include <stdio.h>
-#include <stdlib.h>
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat::Terminal {
-////////////////////////////////////////////////////////////////////////////////
-
-// Shared seam (term.cpp); deliberately not in term.hpp.
-void LogOpenFileAt(const char* dir, const char* appName);
-
-void LogOpenFile(const char* appName)
-{
-  const char* home = getenv("HOME");
-  if (!home) return;
-
-  char dir[512];
-  snprintf(dir, sizeof(dir), "%s/Library/Logs/%s", home, appName);
-  LogOpenFileAt(dir, appName);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat::Terminal
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// File.cpp - Read-only mappings and sequential JSON file output.
-////////////////////////////////////////////////////////////////////////////////
-
-
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-
-////////////////////////////////////////////////////////////////////////////////
-// Logging
-////////////////////////////////////////////////////////////////////////////////
-
-#define FILE_INFO(format, ...) INFO(FILE, (170,190,210), format, ##__VA_ARGS__)
-#define FILE_WARN(format, ...) WARN(FILE, format, ##__VA_ARGS__)
-#define FILE_ERR(format, ...)  ERR(FILE, format, ##__VA_ARGS__)
-
-#define FILE_PANIC(format, ...)  PANIC(FILE, format, ##__VA_ARGS__)
-#define FILE_REQUIRE(expr, ...)  REQUIRE(FILE, expr, "" __VA_OPT__(__VA_ARGS__))
-#define FILE_ASSERT(expr, ...)   ASSERT(FILE, expr, "" __VA_OPT__(__VA_ARGS__))
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -507,13 +179,13 @@ namespace Flat {
 ///////////////////////////////////////////////////////
 WritableFile::WritableFile(const char* pPath)
 {
-  FILE_ASSERT(pPath, "WritableFile needs a path");
+  JSON_ASSERT(pPath, "WritableFile needs a path");
   if (!pPath)
     return;
 
   pFile = fopen(pPath, "wb");
   if (!pFile)
-    FILE_WARN("WritableFile open %s failed: %s\n", pPath, strerror(errno));
+    JSON_WARN("WritableFile open %s failed: %s\n", pPath, strerror(errno));
 }
 
 ///////////////////////////////////////////////////////
@@ -522,14 +194,14 @@ WritableFile::WritableFile(const char* pPath)
 ///////////////////////////////////////////////////////
 bool WritableFile::Write(const void* pData, size_t bytes)
 {
-  FILE_ASSERT(pFile, "WritableFile Write on a closed file (check IsValid() first)");
+  JSON_ASSERT(pFile, "WritableFile Write on a closed file (check IsValid() first)");
   if (failed || !pFile)
     return false;
 
   if (!bytes || fwrite(pData, 1, bytes, pFile) == bytes)
     return true;
 
-  FILE_WARN("WritableFile Write fell short of %zu bytes: %s\n", bytes, strerror(errno));
+  JSON_WARN("WritableFile Write fell short of %zu bytes: %s\n", bytes, strerror(errno));
   failed = true;
   return false;
 }
@@ -539,14 +211,14 @@ bool WritableFile::Write(const void* pData, size_t bytes)
 ///////////////////////////////////////////////////////
 bool WritableFile::Flush()
 {
-  FILE_ASSERT(pFile, "WritableFile Flush on a closed file (check IsValid() first)");
+  JSON_ASSERT(pFile, "WritableFile Flush on a closed file (check IsValid() first)");
   if (failed || !pFile)
     return false;
 
   if (!fflush(pFile))
     return true;
 
-  FILE_WARN("WritableFile Flush failed: %s\n", strerror(errno));
+  JSON_WARN("WritableFile Flush failed: %s\n", strerror(errno));
   failed = true;
   return false;
 }
@@ -577,34 +249,6 @@ FileMap::FileMap(const char* path)
 }  // namespace Flat
 ////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////////////////////////////////////////////////////////
-// @author: rygo6
-// Document.cpp - Flat, caller-owned arena JSON parsing and serialization.
-////////////////////////////////////////////////////////////////////////////////
-
-// Copyright 2024 Mozilla Foundation
-//
-// Project lineage:
-//   - Cosmopolitan tool/net/ljson.c (2022), by Justine Tunney and
-//     Gautham Venkatasubramanian.
-//   - The Mozilla-sponsored C++ port used by Mozilla-Ocho/llamafile and
-//     published as jart/json.cpp by Justine Tunney and contributors (2024).
-//   - This immutable flat-arena parse/serialization derivative.
-//
-// See THIRD_PARTY_NOTICES.md for complete provenance.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include <type_traits>
 #include <limits.h>
 #include <math.h>
@@ -625,56 +269,13 @@ static_assert(sizeof(void*) == 8, "flat json requires a 64-bit target");
 ////////////////////////////////////////////////////////////////////////////////
 // Embedded google/double-conversion
 ////////////////////////////////////////////////////////////////////////////////
-//
-// Origin: https://github.com/google/double-conversion
-// Upstream commit: 75b48d66ac835da2c1678926f7d61d6cb2992922
-// Upstream commit date: 2024-05-21
-// License: BSD-3-Clause
-//
-// Local changes retained while amalgamating:
-//   * remove internal quoted includes after dependency-order amalgamation;
-//   * retain only shortest float/double formatting and JSON decimal parsing;
-//   * write digits directly in the flat arena and use its uncommitted tail for
-//     exact bignum workspace instead of stack or heap buffers;
-//   * use one exact conversion path on x86-64 and ARM64, without
-//     architecture-dependent floating-point shortcuts;
-//   * compact the retained implementation into one double_conversion namespace.
-//
-// The complete upstream license follows.
-//
-// Copyright 2006-2011, the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ////////////////////////////////////////////////////////////////////////////////
 // double-conversion/utils.h (amalgamated)
 ////////////////////////////////////////////////////////////////////////////////
 
-#define DOUBLE_CONVERSION_ASSERT(condition) DOC_REQUIRE(condition, #condition)
-#define DOUBLE_CONVERSION_UNREACHABLE() DOC_PANIC("Unreachable double-conversion path.")
+#define DOUBLE_CONVERSION_ASSERT(condition) JSON_REQUIRE(condition, #condition)
+#define DOUBLE_CONVERSION_UNREACHABLE() JSON_PANIC("Unreachable double-conversion path.")
 
 // Keep upstream's split spelling for its 64-bit constants.
 #define DOUBLE_CONVERSION_UINT64_2PART_C(a, b) (((static_cast<uint64_t>(a) << 32) + 0x##b##u))
@@ -2588,7 +2189,7 @@ double StrtodTrimmed(Flat::Span<const char> trimmed, int exponent, Bignum::Chunk
                                                        : 0xFFFD)
 
 ////////////////////////////////////////////////////////////////////////////////
-namespace Flat::Document {
+namespace Flat {
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2606,12 +2207,12 @@ static constexpr u32 InvalidOffset = UINT32_MAX;
 // BackAlloc
 //  Keeps persistent records behind the live object scratch boundary.
 ///////////////////////////////////////////////////////
-DOC_INLINE static u32 BackAlloc(size_t frontUsed, size_t byteCount, size_t alignment, size_t* pBack)
+JSON_INLINE static u32 BackAlloc(size_t frontUsed, size_t byteCount, size_t alignment, size_t* pBack)
 {
-  DOC_ASSERT(alignment && !(alignment & (alignment - 1)), "Buffer allocation alignment must be a power of two.");
+  JSON_ASSERT(alignment && !(alignment & (alignment - 1)), "Buffer allocation alignment must be a power of two.");
   size_t offset = (*pBack - byteCount) & ~(alignment - 1);
   if (byteCount > *pBack || offset < frontUsed) [[unlikely]] {
-    DOC_WARN("JSON parse buffer cannot allocate %zu bytes without overlapping scratch.\n", byteCount);
+    JSON_WARN("JSON parse buffer cannot allocate %zu bytes without overlapping scratch.\n", byteCount);
     return InvalidOffset;
   }
 
@@ -2631,13 +2232,13 @@ struct ObjectEntry {
 static constexpr u32 ObjectBinarySearchThreshold = 100;
 
 template <typename Byte>
-DOC_INLINE static auto ObjectKeySizes(Byte* pIndex) { return (ConstLike<u32, Byte>*)pIndex; }
+JSON_INLINE static auto ObjectKeySizes(Byte* pIndex) { return (ConstLike<u32, Byte>*)pIndex; }
 
 template <typename Byte>
-DOC_INLINE static auto ObjectEntries(Byte* pIndex, u32 size) { return (ConstLike<ObjectEntry, Byte>*)(ObjectKeySizes(pIndex) + size); }
+JSON_INLINE static auto ObjectEntries(Byte* pIndex, u32 size) { return (ConstLike<ObjectEntry, Byte>*)(ObjectKeySizes(pIndex) + size); }
 
 template <typename Byte>
-DOC_INLINE static auto ObjectSortOrder(Byte* pIndex, u32 size) { return (ConstLike<u32, Byte>*)(ObjectEntries(pIndex, size) + size); }
+JSON_INLINE static auto ObjectSortOrder(Byte* pIndex, u32 size) { return (ConstLike<u32, Byte>*)(ObjectEntries(pIndex, size) + size); }
 
 ///////////////////////////////////////////////////////
 // ObjectOrderLess
@@ -2711,7 +2312,7 @@ struct OutputBuffer {
   explicit OutputBuffer(Span<char> output) : capacity(output.size), pData(output.data)
   {
     if (!pData && capacity) {
-      DOC_WARN("JSON output cannot be null when its capacity is nonzero.\n");
+      JSON_WARN("JSON output cannot be null when its capacity is nonzero.\n");
       size   = capacity;
       status = ERROR_INVALID_ARGUMENT;
     }
@@ -2723,7 +2324,7 @@ struct OutputBuffer {
       return true;
     if (status != SUCCESS)
       return false;
-    DOC_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
+    JSON_WARN("JSON output needs %zu bytes but only %zu bytes remain.\n", count, capacity - size);
     size   = capacity;
     status = ERROR_INSUFFICIENT_SPACE;
     return false;
@@ -2767,7 +2368,7 @@ struct OutputBuffer {
 
   void Commit(size_t count)
   {
-    DOC_ASSERT(count <= capacity - size, "JSON output commit exceeds reserved capacity.");
+    JSON_ASSERT(count <= capacity - size, "JSON output commit exceeds reserved capacity.");
     size += count;
   }
 
@@ -2785,7 +2386,7 @@ struct OutputBuffer {
 };
 
 static void MarshalJson(const Node& value, bool pretty, int indent, OutputBuffer* pBuffer);
-DOC_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer);
+JSON_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer);
 static void WriteString(String string, OutputBuffer* pBuffer);
 static void WriteEscapedString(String string, OutputBuffer* pBuffer);
 
@@ -2879,11 +2480,6 @@ static int Bsr(int value)
 ////////////////////////////////////////////////////////////////////////////////
 // Embedded fast_float Eisel-Lemire subset
 ////////////////////////////////////////////////////////////////////////////////
-//
-// Origin: https://github.com/fastfloat/fast_float
-// Version: 8.2.3
-// Copyright 2021 The fast_float authors
-// License: MIT (complete notice in THIRD_PARTY_NOTICES.md)
 //
 // This retains only binary64 conversion for at-most-19-digit decimals in the
 // finite binary32 decimal-exponent range. Every other number falls back to the
@@ -3012,13 +2608,13 @@ static constexpr uint64_t PowerOfFive[] = {
   0x96769950b50d88f4, 0x1314448000000000,
 };
 
-DOC_INLINE static Value128 Multiply(uint64_t a, uint64_t b)
+JSON_INLINE static Value128 Multiply(uint64_t a, uint64_t b)
 {
   unsigned __int128 product = (unsigned __int128)a * b;
   return {(uint64_t)product, (uint64_t)(product >> 64)};
 }
 
-DOC_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
+JSON_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
 {
   size_t index = 2 * (size_t)(exponent - SmallestPower);
   Value128 product = Multiply(significand, PowerOfFive[index]);
@@ -3031,9 +2627,9 @@ DOC_INLINE static Value128 ComputeProduct(int exponent, uint64_t significand)
   return product;
 }
 
-DOC_INLINE static int BinaryPower(int exponent) { return (((152170 + 65536) * exponent) >> 16) + 63; }
+JSON_INLINE static int BinaryPower(int exponent) { return (((152170 + 65536) * exponent) >> 16) + 63; }
 
-DOC_INLINE static bool Convert(uint64_t significand, int exponent, bool negative, double* pValue)
+JSON_INLINE static bool Convert(uint64_t significand, int exponent, bool negative, double* pValue)
 {
   if (exponent < SmallestPower || exponent > LargestPower)
     return false;
@@ -3134,7 +2730,7 @@ static bool TryShortDecimal(uint64_t significand, int exponent, double* pValue)
   return true;
 }
 
-DOC_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigitCount, unsigned digit)
+JSON_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigitCount, unsigned digit)
 {
   if (*pDigitCount == 19)
     return false;
@@ -3143,7 +2739,7 @@ DOC_INLINE static bool AccumulateDecimalDigit(uint64_t* pSignificand, int* pDigi
   return true;
 }
 
-DOC_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+JSON_INLINE static bool TryFastDouble(const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
 {
   const char* pCursor = pStart;
   bool negative       = false;
@@ -3228,7 +2824,7 @@ static constexpr int DoubleParseMaxSignificantDigits = 772;
 static constexpr size_t DoubleParseScratchCapacity =
     DoubleParseMaxSignificantDigits + 1 + alignof(double_conversion::Bignum::Chunk) - 1 + 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
 
-DOC_INLINE static Result StringToDouble(char* pDoubleScratch, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
+JSON_INLINE static Result StringToDouble(char* pDoubleScratch, const char* pStart, const char* pEnd, const char** ppOutputEnd, double* pOutputValue)
 {
   if (TryFastDouble(pStart, pEnd, ppOutputEnd, pOutputValue))
     return SUCCESS;
@@ -3359,7 +2955,7 @@ DOC_INLINE static Result StringToDouble(char* pDoubleScratch, const char* pStart
   }
 
   [[maybe_unused]] int scratchSize = keptDigits + (nonzeroDigitDropped ? 1 : 0);
-  DOC_ASSERT((size_t)scratchSize <= (size_t)DoubleParseMaxSignificantDigits + 1);
+  JSON_ASSERT((size_t)scratchSize <= (size_t)DoubleParseMaxSignificantDigits + 1);
   char* pDigits     = pDoubleScratch;
   int digitPosition = 0;
 
@@ -3383,7 +2979,7 @@ DOC_INLINE static Result StringToDouble(char* pDoubleScratch, const char* pStart
     uintptr_t workspaceAddress = ((uintptr_t)(pDigits + scratchSize) + alignof(double_conversion::Bignum::Chunk) - 1) & ~(uintptr_t)(alignof(double_conversion::Bignum::Chunk) - 1);
     size_t workspaceSize       = 2 * double_conversion::Bignum::BigitCapacity * sizeof(double_conversion::Bignum::Chunk);
     if (workspaceAddress + workspaceSize > (uintptr_t)(pDoubleScratch + DoubleParseScratchCapacity)) {
-      DOC_WARN("JSON parse buffer has no room for exact number conversion.\n");
+      JSON_WARN("JSON parse buffer has no room for exact number conversion.\n");
       return ERROR_INSUFFICIENT_SPACE;
     }
     converted = double_conversion::StrtodTrimmed(Span<const char>(digitPosition, pDigits), decimalExponent, (double_conversion::Bignum::Chunk*)workspaceAddress);
@@ -3518,7 +3114,7 @@ static void WriteDouble(double value, bool single, OutputBuffer* pBuffer)
 // Immutable value access
 ////////////////////////////////////////////////////////////////////////////////
 
-DOC_INLINE static const Node* FindObjectValue(const Node& object, String key)
+JSON_INLINE static const Node* FindObjectValue(const Node& object, String key)
 {
   const char* pObject         = (const char*)&object + object.objectOffset;
   const u32* pKeySizes        = ObjectKeySizes(pObject);
@@ -3613,9 +3209,9 @@ const Node* Node::MemberAt(size_t index, String* pKey) const
 
 const Node& Node::operator[](String key) const
 {
-  DOC_ASSERT(IsObject(), "JSON value is not an object.");
+  JSON_ASSERT(IsObject(), "JSON value is not an object.");
   const Node* pValue = FindObjectValue(*this, key);
-  DOC_ASSERT(pValue, "JSON object does not contain requested key.");
+  JSON_ASSERT(pValue, "JSON object does not contain requested key.");
   return *pValue;
 }
 
@@ -3637,7 +3233,7 @@ Result Node::ToStringPretty(Span<char> output) const
 // JSON serialization
 ////////////////////////////////////////////////////////////////////////////////
 
-DOC_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer)
+JSON_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffer)
 {
   switch (value.type)
   {
@@ -3693,7 +3289,7 @@ DOC_INLINE static bool MarshalJsonScalar(const Node& value, OutputBuffer* pBuffe
     case TYPE_OBJECT:
       return false;
     default:
-      DOC_PANIC("Unhandled JSON type.");
+      JSON_PANIC("Unhandled JSON type.");
   }
 }
 
@@ -3768,7 +3364,7 @@ static void MarshalJson(const Node& value, bool pretty, int indent, OutputBuffer
             pCursor += name.size;
             *pCursor++ = '"';
             *pCursor++ = ':';
-            DOC_ASSERT(pCursor == pOutput + count);
+            JSON_ASSERT(pCursor == pOutput + count);
             pBuffer->Commit(count);
             wroteHeader = true;
           }
@@ -3836,7 +3432,7 @@ static void MarshalJson(const Node& value, bool pretty, int indent, OutputBuffer
       break;
     }
     default:
-      DOC_PANIC("Unhandled JSON type.");
+      JSON_PANIC("Unhandled JSON type.");
   }
 }
 
@@ -3929,7 +3525,7 @@ static void WriteEscapedString(String string, OutputBuffer* pBuffer)
         break;
       }
       default:
-        DOC_PANIC("Unhandled character escape code during string serialization.");
+        JSON_PANIC("Unhandled character escape code during string serialization.");
     }
   }
 }
@@ -4008,7 +3604,7 @@ static void MarshalValue(const Value& value, bool pretty, int indent, OutputBuff
       break;
     }
     default:
-      DOC_PANIC("Unhandled JSON write type.");
+      JSON_PANIC("Unhandled JSON write type.");
   }
 }
 
@@ -4038,26 +3634,26 @@ Result WriteJSONPretty(const Node& value, Span<char> output) { return value.ToSt
 // StoreNode
 //  Publishes relative offsets only after reserving a complete immutable node.
 ///////////////////////////////////////////////////////
-DOC_INLINE static Result StoreNode(size_t frontUsed, Node node, size_t subtreeEnd, char* pBase, size_t* pBack, u32* pNodeOffset)
+JSON_INLINE static Result StoreNode(size_t frontUsed, Node node, size_t subtreeEnd, char* pBase, size_t* pBack, u32* pNodeOffset)
 {
   u32 offset = BackAlloc(frontUsed, sizeof(Node), alignof(Node), pBack);
   if (offset == InvalidOffset)
     return ERROR_INSUFFICIENT_SPACE;
-  DOC_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
+  JSON_ASSERT(subtreeEnd >= offset && subtreeEnd - offset <= UINT32_MAX);
   node.span = (u32)(subtreeEnd - offset);
   switch (node.type)
   {
     case TYPE_STRING:
     case TYPE_PLAIN_STRING:
-      DOC_ASSERT(node.stringOffset >= offset);
+      JSON_ASSERT(node.stringOffset >= offset);
       node.stringOffset -= offset;
       break;
     case TYPE_ARRAY:
-      DOC_ASSERT(node.arrayOffset >= offset);
+      JSON_ASSERT(node.arrayOffset >= offset);
       node.arrayOffset -= offset;
       break;
     case TYPE_OBJECT:
-      DOC_ASSERT(node.objectOffset >= offset);
+      JSON_ASSERT(node.objectOffset >= offset);
       node.objectOffset -= offset;
       break;
     default:
@@ -4072,7 +3668,7 @@ DOC_INLINE static Result StoreNode(size_t frontUsed, Node node, size_t subtreeEn
 // ParseNumberNode
 //  Keeps exact signed integers before falling back to decimal conversion.
 ///////////////////////////////////////////////////////
-DOC_INLINE static Result ParseNumberNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor, u32* pNodeOffset)
+JSON_INLINE static Result ParseNumberNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, char* pDoubleScratch, const char** ppCursor, u32* pNodeOffset)
 {
   size_t subtreeEnd  = (*pBack);
   const char* pStart = (*ppCursor);
@@ -4222,7 +3818,7 @@ static const char* FindUnescapedStringEnd(const char* pStart, const char* pEnd)
 // TryParseSimpleNode
 //  Leaves complex tokens to the recursive parser without consuming them.
 ///////////////////////////////////////////////////////
-DOC_INLINE static bool TryParseSimpleNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, const char** ppCursor, u32* pNodeOffset, Result* pStatus)
+JSON_INLINE static bool TryParseSimpleNode(size_t frontUsed, const char* pEnd, char* pBase, size_t* pBack, const char** ppCursor, u32* pNodeOffset, Result* pStatus)
 {
   size_t subtreeEnd = (*pBack);
   Node node;
@@ -4332,24 +3928,24 @@ static Result ParseArrayNode(size_t frontUsed, const char* pEnd, int depth, size
         const Node* pChild = (const Node*)(pBase + cursorOffset);
         u32 childSpan      = pChild->span;
         u32 childOffset    = arrayOffset + i * sizeof(Node);
-        DOC_ASSERT(cursorOffset >= childOffset);
+        JSON_ASSERT(cursorOffset >= childOffset);
         u32 delta  = cursorOffset - childOffset;
         Node child = *pChild;
-        DOC_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
+        JSON_ASSERT((uint64_t)child.span + delta <= UINT32_MAX);
         child.span += delta;
         switch (child.type)
         {
           case TYPE_STRING:
           case TYPE_PLAIN_STRING:
-            DOC_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
+            JSON_ASSERT((uint64_t)child.stringOffset + delta <= UINT32_MAX);
             child.stringOffset += delta;
             break;
           case TYPE_ARRAY:
-            DOC_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
+            JSON_ASSERT((uint64_t)child.arrayOffset + delta <= UINT32_MAX);
             child.arrayOffset += delta;
             break;
           case TYPE_OBJECT:
-            DOC_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
+            JSON_ASSERT((uint64_t)child.objectOffset + delta <= UINT32_MAX);
             child.objectOffset += delta;
             break;
           default:
@@ -4585,7 +4181,7 @@ static Result ParseArrayNode(size_t frontUsed, const char* pEnd, int depth, size
               u32 storedKeyOffset = pOffsets[2 * i];
               u32 valueOffset     = pOffsets[2 * i + 1];
               const Node* pKey    = (const Node*)(pBase + storedKeyOffset);
-              DOC_ASSERT(pKey->IsString());
+              JSON_ASSERT(pKey->IsString());
               pKeySizes[i] = pKey->stringSize;
               pEntries[i]  = {
                   storedKeyOffset - indexOffset,
@@ -4639,7 +4235,7 @@ static Result ParseArrayNode(size_t frontUsed, const char* pEnd, int depth, size
           if (status != SUCCESS)
             return status;
           if (frontUsed + 2 * sizeof(u32) > (*pBack)) {
-            DOC_WARN("JSON parse buffer has no room for object offset scratch space.\n");
+            JSON_WARN("JSON parse buffer has no room for object offset scratch space.\n");
             return ERROR_INSUFFICIENT_SPACE;
           }
           u32* pOffsets = (u32*)(pBase + frontUsed);
@@ -4800,7 +4396,7 @@ static Result ParseArrayNode(size_t frontUsed, const char* pEnd, int depth, size
 size_t EstimateSize(const char* pData, size_t size)
 {
   if (!pData && size) {
-    DOC_WARN("JSON size estimate input cannot be null when its size is nonzero.\n");
+    JSON_WARN("JSON size estimate input cannot be null when its size is nonzero.\n");
     return SIZE_MAX;
   }
   if (!size)
@@ -4835,16 +4431,16 @@ static Result ParseJson(const char* pData, size_t size, Arena* pOutput, const No
     *ppRoot = nullptr;
 
   if (!pOutput || !pOutput->data) {
-    DOC_WARN("JSON parse buffer cannot be null.\n");
+    JSON_WARN("JSON parse buffer cannot be null.\n");
     return ERROR_INVALID_ARGUMENT;
   }
   if (pOutput->capacity > INT32_MAX || pOutput->offset > 0 || pOutput->offset == INT32_MIN || pOutput->Used() > pOutput->capacity || ((uintptr_t)pOutput->data & (alignof(Node) - 1))) {
-    DOC_WARN("JSON arena requires aligned storage and a valid reverse cursor.\n");
+    JSON_WARN("JSON arena requires aligned storage and a valid reverse cursor.\n");
     return ERROR_INVALID_ARGUMENT;
   }
 
   if (!pData && size) {
-    DOC_WARN("JSON input cannot be null when its size is nonzero.\n");
+    JSON_WARN("JSON input cannot be null when its size is nonzero.\n");
     return ERROR_INVALID_ARGUMENT;
   }
   if (!pData)
@@ -4873,5 +4469,5 @@ Result ParseJSON(const char* pData, size_t size, Arena* pArena, const Node** ppR
 
 
 ////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat::Document
+}  // namespace Flat
 ////////////////////////////////////////////////////////////////////////////////

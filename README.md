@@ -37,7 +37,7 @@ clang++ -std=c++23 -O2 -fno-exceptions -fno-rtti -nostdlib++ -I. \
   app.cpp FlatJson.cpp -o app
 ```
 
-Use `#include "FlatJson.hpp"` and the `Flat::Document` namespace.
+Use `#include "FlatJson.hpp"`. Everything it declares lives in one namespace, `Flat`.
 The repository's Makefile supplies the supported GNU-extension warning flags.
 
 ## Parse and read
@@ -50,7 +50,6 @@ conversion uses a fixed stack buffer, so the arena pays nothing for it.
 #include "FlatJson.hpp"
 
 using namespace Flat;
-using namespace Flat::Document;
 
 constexpr char Text[] = R"({"values":[1,2,3]})";
 FixedArena<4096> storage;
@@ -125,7 +124,7 @@ if (root.HasKey("settings")) {
 }
 ```
 
-Read accessors use `DOC_ASSERT` for type and bounds contracts. These checks
+Read accessors use `JSON_ASSERT` for type and bounds contracts. These checks
 run in `DEBUG` builds and compile out otherwise. Validate uncertain data with
 `Is*()`, `HasIndex()`, and `HasKey()` before access.
 
@@ -310,7 +309,6 @@ tail as conversion scratch. It can therefore return
 #include "FlatJson.hpp"
 
 using namespace Flat;
-using namespace Flat::Document;
 
 FixedArray<char, 4096> output;
 Result result = WriteJSON(
@@ -343,7 +341,7 @@ container span; nonzero lengths require non-null pointers.
 `WriteJSON()` and `ParseJSON()` return statuses for recoverable failures.
 The checked argument and output-capacity failures emit warnings;
 malformed JSON returns `ERROR_MALFORMED`. File I/O status is handled by the
-separate file wrappers. `DOC_REQUIRE` and `DOC_PANIC` are
+separate file wrappers. `JSON_REQUIRE` and `JSON_PANIC` are
 reserved for internal invariants that indicate a library bug.
 
 ## Write and parse immediately
@@ -353,7 +351,6 @@ bounded `strnlen(output.data, output.size)` gives its text size.
 
 ```cpp
 using namespace Flat;
-using namespace Flat::Document;
 
 FixedArray<char, 4096> output;
 Result result = WriteJSON(
@@ -438,11 +435,14 @@ that capacity. Check for `SIZE_MAX` before narrowing or allocating an arena.
 
 ## Amalgamated sources
 
-`FlatJson.hpp` and `FlatJson.cpp` amalgamate FlatLib's `Types`, `Terminal`,
-`Error`, `Container`, and `File` sources with the JSON `Document` sources.
-`FlatJson.hpp` holds every header in dependency order; `FlatJson.cpp` holds the
-implementations. Each section keeps its original file banner, so it can be
-compared against FlatLib.
+`FlatJson.hpp` and `FlatJson.cpp` amalgamate FlatLib's `Types`, `Error`,
+`Container`, and `File` sources with the JSON `Document` sources.
+`FlatJson.hpp` holds every header in dependency order inside a single
+`namespace Flat`; `FlatJson.cpp` holds the implementations. Each file has a
+single header carrying the copyright, lineage, and license notices for its
+contents. FlatLib's `Terminal` is not included, and the error
+section keeps only `Result` and `string_Result`; logging uses the `JSON_`
+macros described below.
 
 The container section retains only `Span`, `String`, `InitList`, `FixedArray`,
 `Arena`, `FixedArena`, and `ArenaBuffer`, plus `MemCopy`, `MemMove`, and the
@@ -452,19 +452,21 @@ included. `ArenaBuffer` matches FlatLib. The other types are trimmed to the
 members the JSON API, tests, and README examples use. The file section retains
 `FileMap` and `WritableFile` for JSON file input and output.
 
-## Logging and terminal
+## Logging
 
-Library warnings (`[DOC] WARN`, `[FILE] WARN`) go to stderr through
-`Flat::Terminal::Log`, prefixed with the source location and ANSI colors.
-`DEBUG` enables the `*_ASSERT` checks.
+The library logs through seven one-line macros: `JSON_INFO`, `JSON_WARN`,
+`JSON_ERR`, `JSON_VERBOSE`, `JSON_PANIC`, `JSON_REQUIRE`, and `JSON_ASSERT`.
+Each writes to stderr with a plain `fprintf`, as lines such as
+`[JSON] WARN: JSON parse buffer cannot be null.` They hold no state and run no
+setup code.
 
-`FlatJson.cpp` also carries FlatLib's terminal setup, which runs before
-`main()`. When stdin is a TTY it switches stdin to non-canonical, no-echo
-input; when stderr is a TTY it reserves the bottom row as a status line. It
-installs handlers for fatal signals that restore the terminal and re-raise,
-and restores the terminal at exit. Compile `FlatJson.cpp` with
-`-DFLAT_SHARED_LIB` to skip this setup, for example when loading it into a
-host process.
+| Macro | Behavior |
+| --- | --- |
+| `JSON_INFO`, `JSON_WARN`, `JSON_ERR` | Print a tagged line |
+| `JSON_VERBOSE` | Prints like `JSON_INFO` only with `ENABLE_VERBOSE_INFO`; otherwise compiles out |
+| `JSON_PANIC` | Prints, then traps |
+| `JSON_REQUIRE` | Traps with the expression and message when the condition is false |
+| `JSON_ASSERT` | `JSON_REQUIRE` in `DEBUG` builds; compiles out otherwise, without evaluating the expression |
 
 ## Files
 
@@ -488,7 +490,6 @@ JSON serialization and file output are separate operations: serialize into a
 #include <string.h>
 
 using namespace Flat;
-using namespace Flat::Document;
 
 FixedArray<char, 4096> output;
 switch (WriteJSON(
@@ -624,21 +625,21 @@ the unit suite and arena capacity regression. See [tests/README.md](tests/README
 
 ## Code style and compatibility
 
-The API lives in `Flat::Document`: `Node`, `Value`, `ArrayValue`, `ObjectValue`,
-`ParseJSON`, `EstimateSize`, `WriteJSON`, and `WriteJSONPretty`.
-Storage and file types live in `Flat`: `Span`, `String`, `FixedArray`, `Arena`,
-`FixedArena`, `ArenaBuffer`, `FileMap`, and `WritableFile`.
-Results use `Flat::Result` and `Flat::string_Result`. The former
-`flat::Json` names and signatures are not provided.
+Everything lives in namespace `Flat`: the JSON API (`Node`, `Value`,
+`ArrayValue`, `ObjectValue`, `ParseJSON`, `EstimateSize`, `WriteJSON`, and
+`WriteJSONPretty`), the storage and file types (`Span`, `String`, `FixedArray`,
+`Arena`, `FixedArena`, `ArenaBuffer`, `FileMap`, and `WritableFile`), and
+`Result` with `string_Result`. The former `flat::Json` and `Flat::Document`
+names are not provided.
 
 The implementation uses vendored FlatLib sources and standalone configuration.
 `.clang-format` captures the mechanical formatting rules.
 Embedded numeric conversion regions retain upstream conventions and attribution.
 The 16-byte relocatable `Node` layout remains specific to the native ABI.
 
-`FlatJson.cpp` compiles the Document, File, Error, and Terminal
-implementations together; the container subset is header-only.
-It has no dependency on application code and links without the C++ runtime
-library. The terminal section uses the Apple backend; validation covers
-macOS ARM64 and x86-64 under Rosetta. Other platform backends are not validated.
+`FlatJson.cpp` compiles the Document, File, and Error implementations
+together; the container subset is header-only. It has no static initializers,
+no dependency on application code, and links without the C++ runtime library.
+Validation covers macOS ARM64 and x86-64 under Rosetta. Other platforms are
+not validated.
 Third-party benchmark adapters use their libraries' normal runtime requirements.

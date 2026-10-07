@@ -21,7 +21,6 @@
 #include <unistd.h>
 
 using namespace Flat;
-using namespace Flat::Document;
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -1737,7 +1736,7 @@ static const char* getJsonTestSuitePath()
     fclose(file);
     return "../JSONTestSuite/test_parsing/";
   }
-  DOC_PANIC("Could not find JSONTestSuite directory.");
+  JSON_PANIC("Could not find JSONTestSuite directory.");
 }
 
 static void JsonTestSuiteFiles()
@@ -1751,20 +1750,20 @@ static void JsonTestSuiteFiles()
     char path[512];
     snprintf(path, sizeof(path), "%s%s", basePath, kParsingTests[i]);
     FILE* input = fopen(path, "rb");
-    DOC_REQUIRE(input, "Could not open JSONTestSuite input '%s'.", path);
-    DOC_REQUIRE(!fseek(input, 0, SEEK_END), "Could not seek JSONTestSuite input '%s'.", path);
+    JSON_REQUIRE(input, "Could not open JSONTestSuite input '%s'.", path);
+    JSON_REQUIRE(!fseek(input, 0, SEEK_END), "Could not seek JSONTestSuite input '%s'.", path);
     long inputSize = ftell(input);
-    DOC_REQUIRE(inputSize >= 0, "Could not size JSONTestSuite input '%s'.", path);
+    JSON_REQUIRE(inputSize >= 0, "Could not size JSONTestSuite input '%s'.", path);
     rewind(input);
     char* inputData = (char*)malloc((size_t)inputSize + 1);
-    DOC_REQUIRE(inputData, "Could not allocate JSONTestSuite input '%s'.", path);
-    DOC_REQUIRE(fread(inputData, 1, (size_t)inputSize, input) == (size_t)inputSize, "Could not read JSONTestSuite input '%s'.", path);
+    JSON_REQUIRE(inputData, "Could not allocate JSONTestSuite input '%s'.", path);
+    JSON_REQUIRE(fread(inputData, 1, (size_t)inputSize, input) == (size_t)inputSize, "Could not read JSONTestSuite input '%s'.", path);
     fclose(input);
     arena.Reset();
     arena.capacity = sizeof(arenaStorage.bytes);
     if (kParsingTests[i][0] == 'y') {
       size_t estimate = EstimateSize(inputData, (size_t)inputSize);
-      DOC_REQUIRE(estimate != SIZE_MAX && estimate <= sizeof(arenaStorage.bytes), "JSON size estimate failed for '%s'.", path);
+      JSON_REQUIRE(estimate != SIZE_MAX && estimate <= sizeof(arenaStorage.bytes), "JSON size estimate failed for '%s'.", path);
       arena.capacity = estimate;
     }
     Result status = ParseJSON(inputData, (size_t)inputSize, &arena, &arenaRoot);
@@ -1798,7 +1797,7 @@ static void JsonTestSuiteFiles()
         reason = status == SUCCESS ? "IMPLEMENTATION_PASS" : "IMPLEMENTATION_FAIL";
         break;
       default:
-        DOC_PANIC("Unknown JSONTestSuite test class.");
+        JSON_PANIC("Unknown JSONTestSuite test class.");
     }
     printf("%-70s %s%s%s", kParsingTests[i], color, reason, HI_RESET);
     if (status != SUCCESS)

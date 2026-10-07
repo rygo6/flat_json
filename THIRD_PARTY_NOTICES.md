@@ -250,8 +250,8 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ## BSD-3-Clause license — google/double-conversion
 
-Local changes retained by the amalgamation are listed at the start of the
-embedded section in `FlatJson.cpp`.
+Local changes retained by the amalgamation are listed in the header of
+`FlatJson.cpp`.
 
 Copyright 2006-2011, the V8 project authors. All rights reserved.
 Redistribution and use in source and binary forms, with or without

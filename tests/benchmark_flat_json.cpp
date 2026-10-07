@@ -2,7 +2,6 @@
 #include "../FlatJson.hpp"
 
 using namespace Flat;
-using namespace Flat::Document;
 
 struct FlatJsonBenchmark {
   static constexpr const char* Name              = "flat_json";

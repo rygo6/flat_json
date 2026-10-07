@@ -20,7 +20,6 @@
 #include "FlatJson.hpp"
 
 using namespace Flat;
-using namespace Flat::Document;
 
 #include <stdio.h>
 #include <stdlib.h>

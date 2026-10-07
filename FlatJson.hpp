@@ -1,17 +1,157 @@
-#pragma once
-
 ////////////////////////////////////////////////////////////////////////////////
 // @author rygo6
-// types.hpp
+// FlatJson.hpp - Flat, caller-owned arena JSON parsing and serialization.
+////////////////////////////////////////////////////////////////////////////////
+//
+// Copyright 2006-2011, the V8 project authors (google/double-conversion, BSD-3-Clause)
+// Copyright 2021 The fast_float authors (fastfloat/fast_float, MIT)
+// Copyright 2022 Justine Alexandra Roberts Tunney (Cosmopolitan tool/net/ljson.c, ISC)
+// Copyright 2024 Mozilla Foundation (jart/json.cpp C++ port, Apache-2.0)
+// Copyright 2026 rygo6 (flat_json and FlatLib, Apache-2.0)
+//
+// Project lineage:
+//   - Cosmopolitan tool/net/ljson.c (2022), by Justine Tunney and
+//     Gautham Venkatasubramanian.
+//   - The Mozilla-sponsored C++ port used by Mozilla-Ocho/llamafile and
+//     published as jart/json.cpp by Justine Tunney and contributors (2024).
+//   - This immutable flat-arena parse/serialization derivative by rygo6 (2026),
+//     amalgamated with rygo6's FlatLib Types, Error, Container, and File sources.
+//
+// Third-party code embedded in FlatJson.cpp:
+//   - google/double-conversion, commit 75b48d66ac835da2c1678926f7d61d6cb2992922
+//     (2024-05-21), BSD-3-Clause. Local changes retained while amalgamating:
+//       * remove internal quoted includes after dependency-order amalgamation;
+//       * retain only shortest float/double formatting and JSON decimal parsing;
+//       * write digits directly in the flat arena and use its uncommitted tail
+//         for exact bignum workspace instead of stack or heap buffers;
+//       * use one exact conversion path on x86-64 and ARM64, without
+//         architecture-dependent floating-point shortcuts;
+//       * compact the retained implementation into one double_conversion
+//         namespace.
+//   - fastfloat/fast_float 8.2.3, the Eisel-Lemire binary64 subset, MIT.
+//   - chadaustin/sajson informed the object-lookup policy; no sajson source is
+//     included.
+//
+// See THIRD_PARTY_NOTICES.md for complete provenance.
+//
+// flat_json, the Mozilla C++ port, and FlatLib are licensed under the Apache
+// License, Version 2.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Cosmopolitan tool/net/ljson.c, ISC license:
+//
+// Copyright 2022 Justine Alexandra Roberts Tunney
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+// REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+// AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+// INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+// LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+// OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+// PERFORMANCE OF THIS SOFTWARE.
+//
+// google/double-conversion, BSD-3-Clause license:
+//
+// Copyright 2006-2011, the V8 project authors. All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//     * Neither the name of Google Inc. nor the names of its
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// fastfloat/fast_float, MIT license:
+//
+// Copyright 2021 The fast_float authors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 ////////////////////////////////////////////////////////////////////////////////
 
+#pragma once
 
+#include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
 
+#include <initializer_list>
 
 ////////////////////////////////////////////////////////////////////////////////
 namespace Flat {
 ////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Logging
+////////////////////////////////////////////////////////////////////////////////
+
+#define JSON_INFO(format, ...) fprintf(stderr, "[JSON] " format, ##__VA_ARGS__)
+#define JSON_WARN(format, ...) fprintf(stderr, "[JSON] WARN: " format, ##__VA_ARGS__)
+#define JSON_ERR(format, ...)  fprintf(stderr, "[JSON] ERR: " format, ##__VA_ARGS__)
+
+#ifdef ENABLE_VERBOSE_INFO
+#define JSON_VERBOSE(format, ...) JSON_INFO(format, ##__VA_ARGS__)
+#else
+#define JSON_VERBOSE(format, ...) ((void)0)
+#endif
+
+#define JSON_PANIC(format, ...) ({ fprintf(stderr, "[JSON] PANIC: " format "\n", ##__VA_ARGS__); __builtin_trap(); })
+#define JSON_REQUIRE(expr, ...) if (!(expr)) [[unlikely]] { fprintf(stderr, "[JSON] REQUIRE: %s: ", #expr); __VA_OPT__(fprintf(stderr, __VA_ARGS__);) fputc('\n', stderr); __builtin_trap(); }
+
+#ifdef DEBUG
+#define JSON_ASSERT(expr, ...) if (!(expr)) [[unlikely]] { fprintf(stderr, "[JSON] ASSERT: %s: ", #expr); __VA_OPT__(fprintf(stderr, __VA_ARGS__);) fputc('\n', stderr); __builtin_trap(); }
+#else
+#define JSON_ASSERT(expr, ...) ((void)0)
+#endif
 
 using u8  = uint8_t;
 using i8  = int8_t;
@@ -28,187 +168,10 @@ using ull = unsigned long long;
 using ill = long long;
 
 ////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
 // Compiler attributes
 ////////////////////////////////////////////////////////////////////////////////
 
 #define ALWAYS_INLINE [[gnu::always_inline]]
-
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// term.hpp
-////////////////////////////////////////////////////////////////////////////////
-
-
-////////////////////////////////////////////////////////////////////////////////
-// ANSI escape codes
-////////////////////////////////////////////////////////////////////////////////
-
-#define ANSI_RESET            "\033[0m"
-
-// Attributes
-#define ANSI_BOLD             "\033[1m"
-#define ANSI_DIM              "\033[2m"
-#define ANSI_ITALIC           "\033[3m"
-#define ANSI_UNDERLINE        "\033[4m"
-#define ANSI_BLINK            "\033[5m"
-#define ANSI_REVERSE          "\033[7m"
-#define ANSI_HIDDEN           "\033[8m"
-#define ANSI_STRIKETHROUGH    "\033[9m"
-
-// Foreground — standard 8
-#define ANSI_FG_BLACK         "\033[30m"
-#define ANSI_FG_RED           "\033[31m"
-#define ANSI_FG_GREEN         "\033[32m"
-#define ANSI_FG_YELLOW        "\033[33m"
-#define ANSI_FG_BLUE          "\033[34m"
-#define ANSI_FG_MAGENTA       "\033[35m"
-#define ANSI_FG_CYAN          "\033[36m"
-#define ANSI_FG_WHITE         "\033[37m"
-#define ANSI_FG_DEFAULT       "\033[39m"
-
-// Foreground — bright 8
-#define ANSI_FG_BRIGHT_BLACK   "\033[90m"
-#define ANSI_FG_BRIGHT_RED     "\033[91m"
-#define ANSI_FG_BRIGHT_GREEN   "\033[92m"
-#define ANSI_FG_BRIGHT_YELLOW  "\033[93m"
-#define ANSI_FG_BRIGHT_BLUE    "\033[94m"
-#define ANSI_FG_BRIGHT_MAGENTA "\033[95m"
-#define ANSI_FG_BRIGHT_CYAN    "\033[96m"
-#define ANSI_FG_BRIGHT_WHITE   "\033[97m"
-
-// Background — standard 8
-#define ANSI_BG_BLACK         "\033[40m"
-#define ANSI_BG_RED           "\033[41m"
-#define ANSI_BG_GREEN         "\033[42m"
-#define ANSI_BG_YELLOW        "\033[43m"
-#define ANSI_BG_BLUE          "\033[44m"
-#define ANSI_BG_MAGENTA       "\033[45m"
-#define ANSI_BG_CYAN          "\033[46m"
-#define ANSI_BG_WHITE         "\033[47m"
-#define ANSI_BG_DEFAULT       "\033[49m"
-
-// Background — bright 8
-#define ANSI_BG_BRIGHT_BLACK   "\033[100m"
-#define ANSI_BG_BRIGHT_RED     "\033[101m"
-#define ANSI_BG_BRIGHT_GREEN   "\033[102m"
-#define ANSI_BG_BRIGHT_YELLOW  "\033[103m"
-#define ANSI_BG_BRIGHT_BLUE    "\033[104m"
-#define ANSI_BG_BRIGHT_MAGENTA "\033[105m"
-#define ANSI_BG_BRIGHT_CYAN    "\033[106m"
-#define ANSI_BG_BRIGHT_WHITE   "\033[107m"
-
-// 256-color (n = 0..255) and 24-bit truecolor
-#define ANSI_FG_256(n)        "\033[38;5;" #n "m"
-#define ANSI_BG_256(n)        "\033[48;5;" #n "m"
-#define ANSI_FG_RGB(r,g,b)    "\033[38;2;" #r ";" #g ";" #b "m"
-#define ANSI_BG_RGB(r,g,b)    "\033[48;2;" #r ";" #g ";" #b "m"
-
-// Cursor + screen control
-#define ANSI_SAVE_CURSOR      "\0337"        // DECSC: save cursor + attributes
-#define ANSI_RESTORE_CURSOR   "\0338"        // DECRC: restore cursor + attributes
-#define ANSI_CLEAR_LINE       "\033[2K"      // clear entire current line
-#define ANSI_CLEAR_SCREEN     "\033[2J"      // clear entire screen
-#define ANSI_SCROLL_RESET     "\033[r"       // reset DECSTBM to full screen
-
-// Parameterized format-string fragments
-#define ANSI_CUP_ROW_FMT      "\033[%d;1H"   // move cursor to (row, col=1)
-#define ANSI_SCROLL_TOP_FMT   "\033[1;%dr"   // DECSTBM: scroll region = lines 1..N
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat::Terminal {
-////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////
-// StatusBar
-//  Writes to a fixed bottom-row status area while normal stderr output scrolls above it.
-///////////////////////////////////////////////////////
-[[gnu::format(printf, 1, 2)]]
-void StatusBar(const char* fmt, ...);
-
-///////////////////////////////////////////////////////
-// Log
-//  Writes a log line to stderr (file:line + tag prefix + body) in one fwrite.
-///////////////////////////////////////////////////////
-[[gnu::format(printf, 5, 6)]]
-void Log(const char* file, int filePad, int line, const char* tag, const char* fmt, ...);
-
-///////////////////////////////////////////////////////
-// LogOpenFile
-//  Mirrors timestamped log lines with rotation in the platform log directory.
-///////////////////////////////////////////////////////
-void LogOpenFile(const char* appName);
-
-///////////////////////////////////////////////////////
-// LogDir
-//  Directory the log file was opened in; empty string before LogOpenFile.
-///////////////////////////////////////////////////////
-const char* LogDir();
-
-///////////////////////////////////////////////////////
-// Terminal input capture
-//  Raw stdin (no canonical line buffering, no echo) is enabled automatically at
-//  startup when stdin is a TTY, and restored on exit / SIGINT / SIGTERM. Ctrl-C
-//  still works (ISIG kept). Lets a headless client poll the controlling terminal
-//  for keys (and, opt-in, mouse) — e.g. to drive input without a window.
-///////////////////////////////////////////////////////
-
-// Non-blocking single-byte key read. Returns the byte (0..255), or -1 if none is
-// pending. Mouse escape sequences are consumed internally (not returned as keys)
-// and surfaced via PollMouse instead.
-int PollKey();
-
-// One mouse report parsed from the terminal (xterm SGR 1006 + any-motion 1003).
-struct MouseEvent {
-  int  x       = 0;      // 1-based column (terminal cell)
-  int  y       = 0;      // 1-based row
-  int  button  = 0;      // 0=left, 1=middle, 2=right, 3=none (SGR code low 2 bits)
-  bool pressed = false;  // 'M' = press / motion-with-button held; 'm' = release
-  bool motion  = false;  // event carried the motion flag (SGR code & 32)
-};
-
-// Opt-in mouse reporting (OFF by default — any-motion tracking streams a lot of
-// events to stdin, so a client asks for it explicitly). EnableMouse turns on
-// xterm 1003 (any motion) + 1006 (SGR coords); PollMouse pops the next event
-// (false if none). Auto-disabled on exit / SIGINT / SIGTERM. Needs raw stdin (a TTY).
-void Reset();
-void ResetSignalSafe();
-void EnableMouse();
-void DisableMouse();
-bool PollMouse(MouseEvent* out);
-
-////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat::Terminal
-////////////////////////////////////////////////////////////////////////////////
-
-#define TERM_LOG(tag, format, ...) Flat::Terminal::Log(__FILE__, (int)(20 - sizeof(__FILE__)), __LINE__, tag, format, ##__VA_ARGS__)
-
-#define INFO(name, color, format, ...) TERM_LOG(ANSI_FG_RGB color                         "[" #name "]" ANSI_RESET " ",       format, ##__VA_ARGS__)
-#define WARN(name, format, ...)        TERM_LOG(ANSI_FG_RGB(0,0,0) ANSI_BG_RGB(255,255,0) "[" #name "] WARN:" ANSI_RESET " ", format, ##__VA_ARGS__)
-#define ERR(name, format, ...)         TERM_LOG(ANSI_FG_RGB(0,0,0) ANSI_BG_RGB(255,0,0)   "[" #name "] ERR:" ANSI_RESET " ",  format, ##__VA_ARGS__)
-
-#ifdef ENABLE_VERBOSE_INFO
-#define VERBOSE(name, color, format, ...) INFO(name, color, format, ##__VA_ARGS__)
-#else
-#define VERBOSE(name, color, format, ...) ((void)0)
-#endif
-
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// Error.hpp - The Result status vocabulary and the trap/soft-fail macros built over it.
-////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat {
-////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
 // Result
@@ -252,100 +215,6 @@ enum Result : i32 {
 
 const char* string_Result(Result result);
 
-////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat
-////////////////////////////////////////////////////////////////////////////////
-
-///////////////////////////////////////////////////////
-// PANIC
-//  Trap unconditionally after logging a printf-style fatal message.
-///////////////////////////////////////////////////////
-#define PANIC(name, format, ...) ({                                                                                  \
-  TERM_LOG(ANSI_FG_RGB(0,0,0) ANSI_BG_RGB(255,0,0) "[" #name "]" ANSI_RESET " PANIC: ", format "\n", ##__VA_ARGS__); \
-  __builtin_trap();                                                                                                  \
-})
-
-///////////////////////////////////////////////////////
-// REQUIRE
-//  Trap with a logged printf-style message if `expr` is false. `format` is a string
-//  literal (a bare message works; add specifiers + args like TRY for detail).
-///////////////////////////////////////////////////////
-#define REQUIRE(name, expr, format, ...)                                 \
-  if (!(expr)) [[unlikely]] {                                            \
-    ERR(name, #name "_REQUIRE: %s: " format "\n", #expr, ##__VA_ARGS__); \
-    __builtin_trap();                                                    \
-  }
-
-///////////////////////////////////////////////////////
-// ASSERT
-//  Debug-only REQUIRE: traps with a logged message if `expr` is false in DEBUG builds; compiled
-//  out entirely (expr NOT evaluated) when DEBUG is undefined. For invariants the caller is
-//  contractually responsible for (e.g. bounds the caller already checked) — a dev backstop, not
-//  a release guard.
-///////////////////////////////////////////////////////
-#ifdef DEBUG
-#define ASSERT(name, expr, format, ...)                                 \
-  if (!(expr)) [[unlikely]] {                                           \
-    ERR(name, #name "_ASSERT: %s: " format "\n", #expr, ##__VA_ARGS__); \
-    __builtin_trap();                                                   \
-  }
-#else
-#define ASSERT(name, expr, format, ...) ((void)0)
-#endif
-
-///////////////////////////////////////////////////////
-// TRY
-//  Bail to `label` with a logged warning naming `expr` if it is false.
-///////////////////////////////////////////////////////
-#define TRY(name, expr, label, format, ...)                      \
-  if (!(expr)) [[unlikely]] {                                    \
-    WARN(name, #name "_TRY: %s: " format, #expr, ##__VA_ARGS__); \
-    goto label;                                                  \
-  }
-
-///////////////////////////////////////////////////////
-// SUCCEED
-//  Trap if `expr` (a Result) is not SUCCESS. The code name + number are logged via
-//  string_Result; `format`+args add context.
-///////////////////////////////////////////////////////
-#define SUCCEED(name, expr, format, ...)                                                                             \
-  if (const Flat::Result _r = (Flat::Result)(expr); _r != Flat::SUCCESS) [[unlikely]] {                              \
-    ERR(name, #name "_SUCCEED: %s = %s (%d): " format "\n", #expr, Flat::string_Result(_r), (int)_r, ##__VA_ARGS__); \
-    __builtin_trap();                                                                                                \
-  }
-
-///////////////////////////////////////////////////////
-// RETURN
-//  Return a Result from the enclosing function, warning with the method, expression, result name,
-//  and result number on any non-success.
-///////////////////////////////////////////////////////
-#define RETURN(name, expr) ({                                                                             \
-    const Flat::Result _r = (Flat::Result)(expr);                                                         \
-    if (_r != Flat::SUCCESS) [[unlikely]]                                                                 \
-      WARN(name, #name "_RETURN: %s: %s = %s (%d)\n", __func__, #expr, Flat::string_Result(_r), (int)_r); \
-    return _r;                                                                                            \
-  })
-
-////////////////////////////////////////////////////////////////////////////////
-// @author: rygo6
-// Container.hpp - Bounded views and arena storage for JSON parsing and writing.
-////////////////////////////////////////////////////////////////////////////////
-
-
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <initializer_list>
-
-
-#define CTR_ASSERT(expr, ...) ASSERT(CTR, expr, "" __VA_OPT__(__VA_ARGS__))
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat {
-////////////////////////////////////////////////////////////////////////////////
-
 template <typename S, typename T>
 concept SpanOf = requires(size_t count, T* data) { S(count, data); };
 
@@ -358,7 +227,7 @@ struct Span {
   u32 size = 0;
   T* data  = nullptr;
 
-  constexpr Span(size_t n, T* p) : size((u32)n), data(p) { CTR_ASSERT(Fits(n), "Span exceeds its 32-bit size; check Fits() first"); }
+  constexpr Span(size_t n, T* p) : size((u32)n), data(p) { JSON_ASSERT(Fits(n), "Span exceeds its 32-bit size; check Fits() first"); }
 
   template <typename U, size_t Size>
     requires __is_convertible(U (*)[], T (*)[])
@@ -372,7 +241,7 @@ struct Span {
   constexpr bool HasIndex(u32 i) const { return i < size; }
   constexpr T& operator[](u32 i) const
   {
-    CTR_ASSERT(HasIndex(i), "Span index out of range; check HasIndex() first");
+    JSON_ASSERT(HasIndex(i), "Span index out of range; check HasIndex() first");
     return data[i];
   }
 };
@@ -491,7 +360,7 @@ struct ArenaBuffer : Arena {
   void Resize(u32 n)
   {
     u32 used = Used();
-    CTR_ASSERT(n >= used, "ArenaBuffer Resize below the bytes already claimed");
+    JSON_ASSERT(n >= used, "ArenaBuffer Resize below the bytes already claimed");
     if (n < used || n == capacity)
       return;
     if (offset < 0) {
@@ -587,24 +456,6 @@ struct String {
   char operator[](size_t index) const { return data[index]; }
 };
 
-////////////////////////////////////////////////////////////////////////////////
-} // namespace Flat
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// @author rygo6
-// File.hpp - Read-only mappings and sequential output for JSON files.
-////////////////////////////////////////////////////////////////////////////////
-
-
-#include <stdio.h>
-#include <sys/mman.h>
-
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat {
-////////////////////////////////////////////////////////////////////////////////
-
 ///////////////////////////////////////////////////////
 // WritableFile
 //  RAII writable C file stream. Truncates/creates by default; pass append=true to open "ab" and add
@@ -661,71 +512,13 @@ struct FileMap {
   }
 };
 
-////////////////////////////////////////////////////////////////////////////////
-} // namespace Flat
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-// @author: rygo6
-// Document.hpp - Flat, caller-owned arena JSON parsing and serialization.
-////////////////////////////////////////////////////////////////////////////////
-
-// Copyright 2024 Mozilla Foundation
-//
-// Project lineage:
-//   - Cosmopolitan tool/net/ljson.c (2022), by Justine Tunney and
-//     Gautham Venkatasubramanian.
-//   - The Mozilla-sponsored C++ port used by Mozilla-Ocho/llamafile and
-//     published as jart/json.cpp by Justine Tunney and contributors (2024).
-//   - This immutable flat-arena parse/serialization derivative.
-//
-// See THIRD_PARTY_NOTICES.md for complete provenance.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-
-#include <limits.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
-
 #if defined(_MSC_VER)
 #error "MSVC not supported. Please convert your MSVC dependent code to clang or GCC. A modern LLM will be able to do this automatically."
 #elif !defined(__clang__) && !defined(__GNUC__)
 #error "Flat C++ JSON requires Clang or GCC."
 #endif
 
-#include <stdio.h>
-
-
-#define DOC_INLINE [[gnu::always_inline]]
-
-////////////////////////////////////////////////////////////////////////////////
-// Logging
-////////////////////////////////////////////////////////////////////////////////
-
-#define DOC_INFO(format, ...) INFO(DOC, (220,220,120), format, ##__VA_ARGS__)
-#define DOC_WARN(format, ...) WARN(DOC, format, ##__VA_ARGS__)
-#define DOC_ERR(format, ...)  ERR(DOC, format, ##__VA_ARGS__)
-#define DOC_VERBOSE(format, ...) VERBOSE(DOC, (220,220,120), format, ##__VA_ARGS__)
-
-#define DOC_PANIC(format, ...)  PANIC(DOC, format, ##__VA_ARGS__)
-#define DOC_REQUIRE(expr, ...)  REQUIRE(DOC, expr, "" __VA_OPT__(__VA_ARGS__))
-#define DOC_ASSERT(expr, ...)   ASSERT(DOC, expr, "" __VA_OPT__(__VA_ARGS__))
-
-////////////////////////////////////////////////////////////////////////////////
-namespace Flat::Document {
-////////////////////////////////////////////////////////////////////////////////
+#define JSON_INLINE [[gnu::always_inline]]
 
 ////////////////////////////////////////////////////////////////////////////////
 // Read types
@@ -772,59 +565,59 @@ struct Node
 
   Node(const decltype(nullptr) = nullptr) : type(TYPE_NULL), span(0) {}
 
-  DOC_INLINE bool IsNull() const { return type == TYPE_NULL; }
-  DOC_INLINE bool IsBool() const { return type == TYPE_BOOL; }
-  DOC_INLINE bool IsNumber() const { return IsFloat() || IsDouble() || IsLong(); }
-  DOC_INLINE bool IsFloatingPoint() const { return IsFloat() || IsDouble(); }
-  DOC_INLINE bool IsLong() const { return type == TYPE_LONG; }
-  DOC_INLINE bool IsFloat() const { return type == TYPE_FLOAT; }
-  DOC_INLINE bool IsDouble() const { return type == TYPE_DOUBLE; }
-  DOC_INLINE bool IsString() const { return type == TYPE_STRING || type == TYPE_PLAIN_STRING; }
-  DOC_INLINE bool IsArray() const { return type == TYPE_ARRAY; }
-  DOC_INLINE bool IsObject() const { return type == TYPE_OBJECT; }
+  JSON_INLINE bool IsNull() const { return type == TYPE_NULL; }
+  JSON_INLINE bool IsBool() const { return type == TYPE_BOOL; }
+  JSON_INLINE bool IsNumber() const { return IsFloat() || IsDouble() || IsLong(); }
+  JSON_INLINE bool IsFloatingPoint() const { return IsFloat() || IsDouble(); }
+  JSON_INLINE bool IsLong() const { return type == TYPE_LONG; }
+  JSON_INLINE bool IsFloat() const { return type == TYPE_FLOAT; }
+  JSON_INLINE bool IsDouble() const { return type == TYPE_DOUBLE; }
+  JSON_INLINE bool IsString() const { return type == TYPE_STRING || type == TYPE_PLAIN_STRING; }
+  JSON_INLINE bool IsArray() const { return type == TYPE_ARRAY; }
+  JSON_INLINE bool IsObject() const { return type == TYPE_OBJECT; }
 
-  DOC_INLINE bool GetBool() const { DOC_ASSERT(IsBool(), "Node value is not a bool."); return boolValue; }
-  DOC_INLINE float GetFloat() const { DOC_ASSERT(IsFloatingPoint(), "Node value is not a floating-point number."); return IsFloat() ? floatValue : (float)doubleValue; }
-  DOC_INLINE double GetDouble() const { DOC_ASSERT(IsDouble(), "Node value is not a double."); return doubleValue; }
-  DOC_INLINE double GetNumber() const { DOC_ASSERT(IsNumber(), "Node value is not a number."); return IsLong() ? (double)longValue : IsFloat() ? (double)floatValue : doubleValue; }
-  DOC_INLINE long long GetLong() const { DOC_ASSERT(IsLong(), "Node value is not a long."); return longValue; }
-  DOC_INLINE size_t GetSize() const { DOC_ASSERT(HasSize(), "Node value has no size."); return IsString() ? stringSize : IsArray() ? arraySize & ArraySizeMask : objectSize; }
+  JSON_INLINE bool GetBool() const { JSON_ASSERT(IsBool(), "Node value is not a bool."); return boolValue; }
+  JSON_INLINE float GetFloat() const { JSON_ASSERT(IsFloatingPoint(), "Node value is not a floating-point number."); return IsFloat() ? floatValue : (float)doubleValue; }
+  JSON_INLINE double GetDouble() const { JSON_ASSERT(IsDouble(), "Node value is not a double."); return doubleValue; }
+  JSON_INLINE double GetNumber() const { JSON_ASSERT(IsNumber(), "Node value is not a number."); return IsLong() ? (double)longValue : IsFloat() ? (double)floatValue : doubleValue; }
+  JSON_INLINE long long GetLong() const { JSON_ASSERT(IsLong(), "Node value is not a long."); return longValue; }
+  JSON_INLINE size_t GetSize() const { JSON_ASSERT(HasSize(), "Node value has no size."); return IsString() ? stringSize : IsArray() ? arraySize & ArraySizeMask : objectSize; }
 
-  DOC_INLINE String GetString() const { DOC_ASSERT(IsString(), "Node value is not a string."); return String(stringSize, (const char*)this + stringOffset); }
-  DOC_INLINE const Node& GetArray() const { DOC_ASSERT(IsArray(), "Node value is not an array."); return *this; }
-  DOC_INLINE const Node& GetObject() const { DOC_ASSERT(IsObject(), "Node value is not an object."); return *this; }
+  JSON_INLINE String GetString() const { JSON_ASSERT(IsString(), "Node value is not a string."); return String(stringSize, (const char*)this + stringOffset); }
+  JSON_INLINE const Node& GetArray() const { JSON_ASSERT(IsArray(), "Node value is not an array."); return *this; }
+  JSON_INLINE const Node& GetObject() const { JSON_ASSERT(IsObject(), "Node value is not an object."); return *this; }
 
   bool Contains(String key) const;
-  DOC_INLINE bool HasIndex(size_t index) const { return IsArray() && index < (arraySize & ArraySizeMask); }
-  DOC_INLINE bool HasIndex(int index) const { return index >= 0 && HasIndex((size_t)index); }
-  DOC_INLINE bool HasKey(String key) const { return Contains(key); }
-  DOC_INLINE bool HasSize() const { return IsString() || IsArray() || IsObject(); }
+  JSON_INLINE bool HasIndex(size_t index) const { return IsArray() && index < (arraySize & ArraySizeMask); }
+  JSON_INLINE bool HasIndex(int index) const { return index >= 0 && HasIndex((size_t)index); }
+  JSON_INLINE bool HasKey(String key) const { return Contains(key); }
+  JSON_INLINE bool HasSize() const { return IsString() || IsArray() || IsObject(); }
 
   template<size_t Size>
-  DOC_INLINE bool Contains(const char (&key)[Size]) const { return Contains(String(key)); }
+  JSON_INLINE bool Contains(const char (&key)[Size]) const { return Contains(String(key)); }
   template<size_t Size>
-  DOC_INLINE bool HasKey(const char (&key)[Size]) const { return HasKey(String(key)); }
+  JSON_INLINE bool HasKey(const char (&key)[Size]) const { return HasKey(String(key)); }
 
   Result ToString(Span<char> output) const;
   Result ToStringPretty(Span<char> output) const;
 
-  DOC_INLINE const Node& operator[](size_t index) const
+  JSON_INLINE const Node& operator[](size_t index) const
   {
-    DOC_ASSERT(IsArray(), "Node value is not an array.");
+    JSON_ASSERT(IsArray(), "Node value is not an array.");
     u32 size = arraySize & ArraySizeMask;
-    DOC_ASSERT(index < size, "Node index %zu is outside array of size %u.", index, size);
+    JSON_ASSERT(index < size, "Node index %zu is outside array of size %u.", index, size);
     size_t physicalIndex = arraySize & ReversedArrayFlag ? size - index - 1 : index;
     return *(const Node*)((const char*)this + arrayOffset + physicalIndex * sizeof(Node));
   }
   const Node& operator[](String key) const;
 
   template<size_t Size>
-  DOC_INLINE const Node& operator[](const char (&key)[Size]) const { return (*this)[String(key)]; }
+  JSON_INLINE const Node& operator[](const char (&key)[Size]) const { return (*this)[String(key)]; }
 
-  DOC_INLINE const Node& operator[](int index) const { DOC_ASSERT(index >= 0, "Node index is negative."); return (*this)[(size_t)index]; }
-  DOC_INLINE const Node& operator[](u32 index) const { return (*this)[(size_t)index]; }
+  JSON_INLINE const Node& operator[](int index) const { JSON_ASSERT(index >= 0, "Node index is negative."); return (*this)[(size_t)index]; }
+  JSON_INLINE const Node& operator[](u32 index) const { return (*this)[(size_t)index]; }
 
-  DOC_INLINE bool TryCopyString(String key, Span<char> output) const
+  JSON_INLINE bool TryCopyString(String key, Span<char> output) const
   {
     if (!output.data || !output.size)
       return false;
@@ -842,9 +635,9 @@ struct Node
   }
 
   template<size_t Size>
-  DOC_INLINE bool TryCopyString(const char (&key)[Size], Span<char> output) const { return TryCopyString(String(key), output); }
+  JSON_INLINE bool TryCopyString(const char (&key)[Size], Span<char> output) const { return TryCopyString(String(key), output); }
 
-  DOC_INLINE bool TryGetLong(String key, long long* pOut) const
+  JSON_INLINE bool TryGetLong(String key, long long* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -857,7 +650,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetU32(String key, u32* pOut) const
+  JSON_INLINE bool TryGetU32(String key, u32* pOut) const
   {
     long long value;
     if (!pOut || !TryGetLong(key, &value) || value < 0 || value > (long long)UINT32_MAX)
@@ -867,7 +660,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetFloat(String key, float* pOut) const
+  JSON_INLINE bool TryGetFloat(String key, float* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -880,7 +673,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetDouble(String key, double* pOut) const
+  JSON_INLINE bool TryGetDouble(String key, double* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -893,7 +686,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetBool(String key, bool* pOut) const
+  JSON_INLINE bool TryGetBool(String key, bool* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -906,7 +699,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetString(String key, String* pOut) const
+  JSON_INLINE bool TryGetString(String key, String* pOut) const
   {
     if (!pOut || !Contains(key))
       return false;
@@ -919,7 +712,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetArray(String key, const Node** ppOut) const
+  JSON_INLINE bool TryGetArray(String key, const Node** ppOut) const
   {
     if (!ppOut || !Contains(key))
       return false;
@@ -932,7 +725,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryGetObject(String key, const Node** ppOut) const
+  JSON_INLINE bool TryGetObject(String key, const Node** ppOut) const
   {
     if (!ppOut || !Contains(key))
       return false;
@@ -946,30 +739,30 @@ struct Node
   }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetLong(const char (&key)[Size], long long* pOut) const { return TryGetLong(String(key), pOut); }
+  JSON_INLINE bool TryGetLong(const char (&key)[Size], long long* pOut) const { return TryGetLong(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetU32(const char (&key)[Size], u32* pOut) const { return TryGetU32(String(key), pOut); }
+  JSON_INLINE bool TryGetU32(const char (&key)[Size], u32* pOut) const { return TryGetU32(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetFloat(const char (&key)[Size], float* pOut) const { return TryGetFloat(String(key), pOut); }
+  JSON_INLINE bool TryGetFloat(const char (&key)[Size], float* pOut) const { return TryGetFloat(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetDouble(const char (&key)[Size], double* pOut) const { return TryGetDouble(String(key), pOut); }
+  JSON_INLINE bool TryGetDouble(const char (&key)[Size], double* pOut) const { return TryGetDouble(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetBool(const char (&key)[Size], bool* pOut) const { return TryGetBool(String(key), pOut); }
+  JSON_INLINE bool TryGetBool(const char (&key)[Size], bool* pOut) const { return TryGetBool(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetString(const char (&key)[Size], String* pOut) const { return TryGetString(String(key), pOut); }
+  JSON_INLINE bool TryGetString(const char (&key)[Size], String* pOut) const { return TryGetString(String(key), pOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetArray(const char (&key)[Size], const Node** ppOut) const { return TryGetArray(String(key), ppOut); }
+  JSON_INLINE bool TryGetArray(const char (&key)[Size], const Node** ppOut) const { return TryGetArray(String(key), ppOut); }
 
   template<size_t Size>
-  DOC_INLINE bool TryGetObject(const char (&key)[Size], const Node** ppOut) const { return TryGetObject(String(key), ppOut); }
+  JSON_INLINE bool TryGetObject(const char (&key)[Size], const Node** ppOut) const { return TryGetObject(String(key), ppOut); }
 
-  DOC_INLINE bool TryCopyFloatArray(String key, Span<float> output) const
+  JSON_INLINE bool TryCopyFloatArray(String key, Span<float> output) const
   {
     const Node* pArray;
     if ((output.size && !output.data) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size)
@@ -986,7 +779,7 @@ struct Node
     return true;
   }
 
-  DOC_INLINE bool TryCopyDoubleArray(String key, Span<double> output) const
+  JSON_INLINE bool TryCopyDoubleArray(String key, Span<double> output) const
   {
     const Node* pArray;
     if ((output.size && !output.data) || !TryGetArray(key, &pArray) || pArray->GetSize() != output.size)
@@ -1004,12 +797,12 @@ struct Node
   }
 
   template<size_t Size>
-  DOC_INLINE bool TryCopyFloatArray(const char (&key)[Size], Span<float> output) const { return TryCopyFloatArray(String(key), output); }
+  JSON_INLINE bool TryCopyFloatArray(const char (&key)[Size], Span<float> output) const { return TryCopyFloatArray(String(key), output); }
 
   template<size_t Size>
-  DOC_INLINE bool TryCopyDoubleArray(const char (&key)[Size], Span<double> output) const { return TryCopyDoubleArray(String(key), output); }
+  JSON_INLINE bool TryCopyDoubleArray(const char (&key)[Size], Span<double> output) const { return TryCopyDoubleArray(String(key), output); }
 
-  DOC_INLINE bool TryParseHexString(String key, u32* pOut) const
+  JSON_INLINE bool TryParseHexString(String key, u32* pOut) const
   {
     String text;
     if (!pOut || !TryGetString(key, &text))
@@ -1043,7 +836,7 @@ struct Node
   }
 
   template<size_t Size>
-  DOC_INLINE bool TryParseHexString(const char (&key)[Size], u32* pOut) const { return TryParseHexString(String(key), pOut); }
+  JSON_INLINE bool TryParseHexString(const char (&key)[Size], u32* pOut) const { return TryParseHexString(String(key), pOut); }
 
   struct Member
   {
@@ -1058,9 +851,9 @@ struct Node
     const Node* pDocument;
     size_t index;
 
-    DOC_INLINE const Node& operator*() const { return (*pDocument)[index]; }
-    DOC_INLINE ArrayIterator& operator++() { ++index; return *this; }
-    DOC_INLINE bool operator!=(const ArrayIterator& other) const { return index != other.index; }
+    JSON_INLINE const Node& operator*() const { return (*pDocument)[index]; }
+    JSON_INLINE ArrayIterator& operator++() { ++index; return *this; }
+    JSON_INLINE bool operator!=(const ArrayIterator& other) const { return index != other.index; }
   };
 
   struct MemberIterator
@@ -1068,41 +861,41 @@ struct Node
     const Node* pDocument;
     size_t index;
 
-    DOC_INLINE Member operator*() const { String key; const Node* pValue = pDocument->MemberAt(index, &key); return {key, *pValue}; }
-    DOC_INLINE MemberIterator& operator++() { ++index; return *this; }
-    DOC_INLINE bool operator!=(const MemberIterator& other) const { return index != other.index; }
+    JSON_INLINE Member operator*() const { String key; const Node* pValue = pDocument->MemberAt(index, &key); return {key, *pValue}; }
+    JSON_INLINE MemberIterator& operator++() { ++index; return *this; }
+    JSON_INLINE bool operator!=(const MemberIterator& other) const { return index != other.index; }
   };
 
   struct ElementsView
   {
     const Node* pDocument;
 
-    DOC_INLINE ArrayIterator begin() const { return {pDocument, 0}; }
-    DOC_INLINE ArrayIterator end() const { return {pDocument, pDocument && pDocument->IsArray() ? pDocument->GetSize() : 0}; }
+    JSON_INLINE ArrayIterator begin() const { return {pDocument, 0}; }
+    JSON_INLINE ArrayIterator end() const { return {pDocument, pDocument && pDocument->IsArray() ? pDocument->GetSize() : 0}; }
   };
 
   struct MembersView
   {
     const Node* pDocument;
 
-    DOC_INLINE MemberIterator begin() const { return {pDocument, 0}; }
-    DOC_INLINE MemberIterator end() const { return {pDocument, pDocument && pDocument->IsObject() ? (size_t)pDocument->objectSize : 0}; }
+    JSON_INLINE MemberIterator begin() const { return {pDocument, 0}; }
+    JSON_INLINE MemberIterator end() const { return {pDocument, pDocument && pDocument->IsObject() ? (size_t)pDocument->objectSize : 0}; }
   };
 
-  DOC_INLINE ElementsView Elements() const { DOC_ASSERT(IsArray(), "Node value is not an array."); return {this}; }
-  DOC_INLINE MembersView Members() const { DOC_ASSERT(IsObject(), "Node value is not an object."); return {this}; }
+  JSON_INLINE ElementsView Elements() const { JSON_ASSERT(IsArray(), "Node value is not an array."); return {this}; }
+  JSON_INLINE MembersView Members() const { JSON_ASSERT(IsObject(), "Node value is not an object."); return {this}; }
 
-  DOC_INLINE ElementsView TryElements() const { return {IsArray() ? this : nullptr}; }
-  DOC_INLINE MembersView TryMembers() const { return {IsObject() ? this : nullptr}; }
+  JSON_INLINE ElementsView TryElements() const { return {IsArray() ? this : nullptr}; }
+  JSON_INLINE MembersView TryMembers() const { return {IsObject() ? this : nullptr}; }
 
-  DOC_INLINE ElementsView TryElements(String key) const
+  JSON_INLINE ElementsView TryElements(String key) const
   {
     const Node* pArray = nullptr;
     TryGetArray(key, &pArray);
     return {pArray};
   }
 
-  DOC_INLINE MembersView TryMembers(String key) const
+  JSON_INLINE MembersView TryMembers(String key) const
   {
     const Node* pObject = nullptr;
     TryGetObject(key, &pObject);
@@ -1110,10 +903,10 @@ struct Node
   }
 
   template<size_t Size>
-  DOC_INLINE ElementsView TryElements(const char (&key)[Size]) const { return TryElements(String(key)); }
+  JSON_INLINE ElementsView TryElements(const char (&key)[Size]) const { return TryElements(String(key)); }
 
   template<size_t Size>
-  DOC_INLINE MembersView TryMembers(const char (&key)[Size]) const { return TryMembers(String(key)); }
+  JSON_INLINE MembersView TryMembers(const char (&key)[Size]) const { return TryMembers(String(key)); }
 };
 
 static_assert(sizeof(Node) == 16, "Node records must remain 16 bytes for direct array indexing.");
@@ -1240,5 +1033,5 @@ Result WriteJSON(const Node& value, Span<char> output);
 Result WriteJSONPretty(const Node& value, Span<char> output);
 
 ////////////////////////////////////////////////////////////////////////////////
-}  // namespace Flat::Document
+}  // namespace Flat
 ////////////////////////////////////////////////////////////////////////////////
