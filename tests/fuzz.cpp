@@ -17,7 +17,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "Document.hpp"
+#include "FlatJson.hpp"
 
 using namespace Flat;
 using namespace Flat::Document;

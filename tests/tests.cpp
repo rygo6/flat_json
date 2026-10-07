@@ -17,8 +17,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "File.hpp"
-#include "Document.hpp"
+#include "FlatJson.hpp"
 #include <unistd.h>
 
 using namespace Flat;
@@ -212,9 +211,6 @@ void PublicSoftFailureTest()
   WritableFile invalidFile("bin/missing/file.json");
   if (invalidFile.IsValid())
     exit(217);
-  WritableFileMap invalidOutput(4, "bin/missing/file-not-created.json");
-  if (invalidOutput.IsValid())
-    exit(216);
 }
 
 void FileMapRoundTripTest()
@@ -222,12 +218,9 @@ void FileMapRoundTripTest()
   static constexpr char Path[]     = "file_map_round_trip_test.json";
   static constexpr char Expected[] = "{\"model\":\"gpt-5\",\"stream\":true,\"number\":3.14,\"escaped\":\"line\\n\"}";
 
-  {
-    WritableFileMap output(4, Path);
-    if (!output.IsValid())
-      exit(83);
-    memcpy(output.data, "null", 4);
-  }
+  if (!WriteTextFile(Path, "null"))
+    exit(83);
+
   {
     FileMap input(Path);
     if (!input.IsValid() || input.size != 4 || memcmp(input.data, "null", 4))

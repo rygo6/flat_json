@@ -53,9 +53,9 @@ tests: $(BIN)/tests
 $(BIN) $(OBJ):
 	mkdir -p $@
 
-FLATLIB_SRCS := Document.cpp Container.cpp File.cpp Error.cpp Terminal.cpp Terminal_apple.cpp
+FLATLIB_SRCS := FlatJson.cpp
 FLATLIB_OBJS := $(FLATLIB_SRCS:%.cpp=$(OBJ)/%.o)
-FLATLIB_HDRS := Document.hpp Container.hpp File.hpp Error.hpp Terminal.hpp Types.hpp flat_json.hpp
+FLATLIB_HDRS := FlatJson.hpp
 
 $(OBJ)/%.o: %.cpp $(FLATLIB_HDRS) | $(OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -I. -c -o $@ $<

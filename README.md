@@ -29,16 +29,15 @@ copyright notices, and licenses.
 
 ## Build
 
-The JSON API requires the vendored implementation files, not just `Document.cpp`.
-On macOS, compile and link them with your application:
+The library is two amalgamated files: `FlatJson.hpp` and `FlatJson.cpp`.
+On macOS, compile and link `FlatJson.cpp` with your application:
 
 ```sh
 clang++ -std=c++23 -O2 -fno-exceptions -fno-rtti -nostdlib++ -I. \
-  app.cpp Document.cpp Container.cpp File.cpp Error.cpp Terminal.cpp Terminal_apple.cpp \
-  -o app
+  app.cpp FlatJson.cpp -o app
 ```
 
-Use `#include "Document.hpp"` and the `Flat::Document` namespace.
+Use `#include "FlatJson.hpp"` and the `Flat::Document` namespace.
 The repository's Makefile supplies the supported GNU-extension warning flags.
 
 ## Parse and read
@@ -48,7 +47,7 @@ bytes per input byte. It does not parse or validate the input. Numeric
 conversion uses a fixed stack buffer, so the arena pays nothing for it.
 
 ```cpp
-#include "Document.hpp"
+#include "FlatJson.hpp"
 
 using namespace Flat;
 using namespace Flat::Document;
@@ -89,6 +88,16 @@ Caller-supplied storage must span its declared capacity. The parser rejects
 null or misaligned storage, capacities above `INT32_MAX`, forward cursors,
 and cursors outside the buffer.
 
+`ArenaBuffer` backs an `Arena` with a heap allocation that is freed when it
+leaves scope. It passes to `ParseJSON()` as an `Arena*`:
+
+```cpp
+ArenaBuffer buffer((u32)EstimateSize(Text));
+const Node* pDocument = nullptr;
+if (ParseJSON(Text, &buffer, &pDocument) != SUCCESS)
+  return false;
+```
+
 `ArenaBuffer::Resize()` returns `void`. It preserves the used bytes when moving
 reverse data, but does not provide recoverable allocation-failure handling.
 For a parsed document, keep the new capacity at least `Used()` and preserve its
@@ -125,7 +134,30 @@ run in `DEBUG` builds and compile out otherwise. Validate uncertain data with
 is always NUL, but `size`
 is authoritative because decoded strings may contain embedded NUL bytes.
 The parser accepts up to 19 nested arrays or objects; deeper input returns
-`MALFORMED`.
+`ERROR_MALFORMED`.
+
+`String` is a non-owning view; every operation is bounded by `size` and never
+reads past it. It constructs from a string literal, a `const char*`, or a
+`(size, pointer)` pair. `Find()` and `RFind()` return the index of the match,
+or -1 when there is none:
+
+```cpp
+String model = root["model"].GetString();
+if (model == "gpt-5" || model.StartsWith("gpt-")) {
+  i64 dash = model.Find('-');
+  String family = model.Substr(0, (u32)dash);
+}
+```
+
+| Method | Result |
+| --- | --- |
+| `IsEmpty()` | `size == 0` |
+| `==`, `!=` | Same size and bytes |
+| `StartsWith(prefix)` | Prefix test |
+| `Find(c, from)`, `Find(needle, from)` | First match at or after `from`, or -1 |
+| `RFind(c)` | Last match, or -1 |
+| `Substr(pos, length)` | View clamped to the string's bounds |
+| `operator[]` | Byte at an index; unchecked |
 
 ### Try accessors
 
@@ -195,7 +227,7 @@ if (!root.TryCopyFloatArray("color", color))
 accepting `"0x1a2b"` hex or decimal — for values conventionally written in hex
 such as hardware identifiers. A `0x`/`0X` prefix selects hexadecimal; leading
 zeros remain decimal. Signs, whitespace, embedded NULs, trailing characters,
-and values beyond `UINT32_MAX` are rejected:
+strings longer than 15 characters, and values beyond `UINT32_MAX` are rejected:
 
 ```cpp
 u32 deviceId = 0;
@@ -275,7 +307,7 @@ tail as conversion scratch. It can therefore return
 `ERROR_INSUFFICIENT_SPACE` even when the final JSON text alone would fit.
 
 ```cpp
-#include "Document.hpp"
+#include "FlatJson.hpp"
 
 using namespace Flat;
 using namespace Flat::Document;
@@ -311,7 +343,7 @@ container span; nonzero lengths require non-null pointers.
 `WriteJSON()` and `ParseJSON()` return statuses for recoverable failures.
 The checked argument and output-capacity failures emit warnings;
 malformed JSON returns `ERROR_MALFORMED`. File I/O status is handled by the
-separate file wrappers. `JSON_REQUIRE` and `JSON_PANIC` are
+separate file wrappers. `DOC_REQUIRE` and `DOC_PANIC` are
 reserved for internal invariants that indicate a library bug.
 
 ## Write and parse immediately
@@ -404,34 +436,54 @@ limits supported capacity to `INT32_MAX` bytes (just under 2 GiB).
 `EstimateSize()` returns `SIZE_MAX` when its conservative bound exceeds
 that capacity. Check for `SIZE_MAX` before narrowing or allocating an arena.
 
-## Vendored headers
+## Amalgamated sources
 
-`Container.hpp`, `File.hpp`, `Error.hpp`, `Terminal.hpp`, and `Types.hpp` are
-vendored from FlatLib with standalone configuration. The JSON API lives in
-`Document.hpp`/`Document.cpp`. `flat_json.hpp`
-is an include-only compatibility shim for `Document.hpp`.
+`FlatJson.hpp` and `FlatJson.cpp` amalgamate FlatLib's `Types`, `Terminal`,
+`Error`, `Container`, and `File` sources with the JSON `Document` sources.
+`FlatJson.hpp` holds every header in dependency order; `FlatJson.cpp` holds the
+implementations. Each section keeps its original file banner, so it can be
+compared against FlatLib.
+
+The container section retains only `Span`, `String`, `InitList`, `FixedArray`,
+`Arena`, `FixedArena`, and `ArenaBuffer`, plus `MemCopy`, `MemMove`, and the
+`Min`/`Str*` helpers behind `String`. `String` matches FlatLib's string view
+except for its `Literal` and `FixedString` constructors, whose types are not
+included. `ArenaBuffer` matches FlatLib. The other types are trimmed to the
+members the JSON API, tests, and README examples use. The file section retains
+`FileMap` and `WritableFile` for JSON file input and output.
+
+## Logging and terminal
+
+Library warnings (`[DOC] WARN`, `[FILE] WARN`) go to stderr through
+`Flat::Terminal::Log`, prefixed with the source location and ANSI colors.
+`DEBUG` enables the `*_ASSERT` checks.
+
+`FlatJson.cpp` also carries FlatLib's terminal setup, which runs before
+`main()`. When stdin is a TTY it switches stdin to non-canonical, no-echo
+input; when stderr is a TTY it reserves the bottom row as a status line. It
+installs handlers for fatal signals that restore the terminal and re-raise,
+and restores the terminal at exit. Compile `FlatJson.cpp` with
+`-DFLAT_SHARED_LIB` to skip this setup, for example when loading it into a
+host process.
 
 ## Files
 
-`File.hpp` provides four separate RAII wrappers:
+`FlatJson.hpp` provides two file RAII wrappers:
 
 | Type | Purpose |
 | --- | --- |
-| `File` | Read-only buffered `FILE*`. |
-| `WritableFile` | Growing sequential output; truncates by default or appends when requested. |
+| `WritableFile` | Growing sequential output; truncates or creates the file. |
 | `FileMap` | Read-only mapping of an existing file. |
-| `WritableFileMap` | Exact-size writable mapping for fixed binary data, random patches, or shared memory—not JSON streaming. |
 
-`WritableFile::Flush()` reports buffered write errors and `HasError()` includes
-previous write failures. Call `Flush()` explicitly to check success before the
+`WritableFile::Flush()` reports buffered write errors, including previous
+write failures. Call `Flush()` explicitly to check success before the
 destructor closes the stream; destructors do not report `fclose()` failures.
 
 JSON serialization and file output are separate operations: serialize into a
 `Span<char>`, then pass the resulting bytes to `WritableFile::Write()`.
 
 ```cpp
-#include "File.hpp"
-#include "Document.hpp"
+#include "FlatJson.hpp"
 
 #include <string.h>
 
@@ -482,20 +534,20 @@ write as `1e5000` and `-1e5000`.
 
 ## Benchmarks
 
-Measured 2026-09-09 on macOS 26.5.1 ARM64 with Apple Clang 17.0.0, C++23,
+Measured 2026-10-07 on macOS 26.5.1 ARM64 with Apple Clang 17.0.0, C++23,
 `-O3`, and `-DNDEBUG`. Values are the median of seven samples lasting at least
 25 ms. Lower is better.
 
 | Library | Parse 32-bit only | Parse with 64-bit | Serialize binary to string | Serialize binary to string pretty | Array lookup | Object lookup | Integer access | Floating access | String access |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Flat C++ JSON | 475.6 ns | 1068.1 ns | 1173.5 ns | 1273.9 ns | 0.6 ns | 7.0 ns | 0.5 ns | 0.4 ns | 0.6 ns |
-| jart/json.cpp | 2120.8 ns | 3179.1 ns | 2948.9 ns | 4004.0 ns | 2.0 ns | 36.8 ns | 0.9 ns | 1.1 ns | 1.1 ns |
-| llamafile json.cpp | 1793.6 ns | 2583.9 ns | 2939.1 ns | 3940.6 ns | 1.8 ns | 35.4 ns | 0.8 ns | 0.8 ns | 0.8 ns |
-| nlohmann::ordered_json | 3365.8 ns | 5234.9 ns | 2900.9 ns | 4150.3 ns | 1.3 ns | 14.7 ns | 0.4 ns | 0.5 ns | 0.7 ns |
-| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.2 ns | 24.1 ns | 3.5 ns | 12.2 ns | 0.6 ns |
-| chadaustin/sajson | 493.8 ns | N/A | N/A | N/A | 0.5 ns | 9.6 ns | 0.6 ns | 0.5 ns | 0.7 ns |
-| DaveGamble/cJSON | 2900.7 ns | N/A | 5996.6 ns | 6246.9 ns | 24.3 ns | 49.0 ns | 0.5 ns | 0.4 ns | 0.5 ns |
-| zserge/jsmn | N/A | N/A | N/A | N/A | 34.5 ns | 27.7 ns | 3.5 ns | 10.9 ns | 0.6 ns |
+| Flat C++ JSON | 477.4 ns | 1041.1 ns | 1131.0 ns | 1221.6 ns | 0.5 ns | 6.8 ns | 0.5 ns | 0.4 ns | 0.7 ns |
+| jart/json.cpp | 1902.3 ns | 2771.4 ns | 2916.5 ns | 3952.5 ns | 2.0 ns | 37.4 ns | 0.9 ns | 1.0 ns | 1.0 ns |
+| llamafile json.cpp | 1539.1 ns | 2262.7 ns | 2843.5 ns | 3862.4 ns | 1.8 ns | 32.7 ns | 0.7 ns | 0.7 ns | 0.8 ns |
+| nlohmann::ordered_json | 2938.6 ns | 4666.7 ns | 2855.0 ns | 3941.8 ns | 1.3 ns | 14.2 ns | 0.4 ns | 0.4 ns | 0.7 ns |
+| niXman/flatjson | N/A | N/A | N/A* | N/A* | 4.2 ns | 23.5 ns | 3.5 ns | 12.9 ns | 0.5 ns |
+| chadaustin/sajson | 475.3 ns | N/A | N/A | N/A | 0.5 ns | 9.6 ns | 0.6 ns | 0.5 ns | 0.7 ns |
+| DaveGamble/cJSON | 2228.3 ns | N/A | 5937.3 ns | 6185.5 ns | 23.3 ns | 48.0 ns | 0.5 ns | 0.4 ns | 0.5 ns |
+| zserge/jsmn | N/A | N/A | N/A | N/A | 34.5 ns | 28.4 ns | 3.5 ns | 10.9 ns | 0.6 ns |
 
 The parse columns include only libraries that eagerly produce and validate the
 required numeric values:
@@ -521,8 +573,8 @@ make benchmark
 
 ## Verification
 
-Validation on 2026-09-09 rebuilt the current `Flat::Document` sources from scratch
-on macOS 26.5.1 with Apple Clang 17.0.0 (`clang-1700.6.3.2`).
+Validation on 2026-10-07 rebuilt the amalgamated `FlatJson.hpp`/`FlatJson.cpp`
+from scratch on macOS 26.5.1 with Apple Clang 17.0.0 (`clang-1700.6.3.2`).
 Native, UBSan, and x86-64 suites pass, including the small-arena regression.
 
 | Check | Result |
@@ -535,8 +587,8 @@ Native, UBSan, and x86-64 suites pass, including the small-arena regression.
 | Arena capacity sweep | Passed native, UBSan, and x86-64: two nested documents across capacities 0–16,384, including the 106-byte regression |
 | ASan | Runtime initialization deadlock reproduced in a minimal C program, inside and outside the sandbox; see [diagnosis](tests/README.md#asan-startup-deadlock) |
 | x86-64 under Rosetta | Build, unit tests, and all 2,304 fuzz seeds passed |
-| Warning-clean build | Core and owned test executables pass `-Wall -Wextra -Werror` with the documented GNU-extension flags |
-| README examples | All 13 C++ examples compiled and linked against the current FlatLib implementation files |
+| Warning-clean build | `FlatJson.cpp` and owned test executables pass `-Wall -Wextra -Werror` with the documented GNU-extension flags |
+| README examples | All 15 C++ examples compiled and linked against the amalgamated `FlatJson.cpp` |
 | Benchmark adapters | All eight built, validated their supported workloads, and completed |
 
 Backward allocation checks both remaining capacity and live object scratch.
@@ -574,17 +626,19 @@ the unit suite and arena capacity regression. See [tests/README.md](tests/README
 
 The API lives in `Flat::Document`: `Node`, `Value`, `ArrayValue`, `ObjectValue`,
 `ParseJSON`, `EstimateSize`, `WriteJSON`, and `WriteJSONPretty`.
-Results use `Flat::Result` and `Flat::string_Result` from `Error.hpp`.
-`flat_json.hpp` preserves the include path only; it does not restore the former
-`flat::Json` names or signatures.
+Storage and file types live in `Flat`: `Span`, `String`, `FixedArray`, `Arena`,
+`FixedArena`, `ArenaBuffer`, `FileMap`, and `WritableFile`.
+Results use `Flat::Result` and `Flat::string_Result`. The former
+`flat::Json` names and signatures are not provided.
 
 The implementation uses vendored FlatLib sources and standalone configuration.
 `.clang-format` captures the mechanical formatting rules.
 Embedded numeric conversion regions retain upstream conventions and attribution.
 The 16-byte relocatable `Node` layout remains specific to the native ABI.
 
-The build includes FlatLib's Container, File, Error, and Terminal implementations.
+`FlatJson.cpp` compiles the Document, File, Error, and Terminal
+implementations together; the container subset is header-only.
 It has no dependency on application code and links without the C++ runtime
-library. The current Makefile selects `Terminal_apple.cpp`; validation covers
+library. The terminal section uses the Apple backend; validation covers
 macOS ARM64 and x86-64 under Rosetta. Other platform backends are not validated.
 Third-party benchmark adapters use their libraries' normal runtime requirements.

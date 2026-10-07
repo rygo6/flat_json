@@ -36,15 +36,20 @@ vectors and upstream licenses are preserved.
 
 ## Current validation
 
-On 2026-09-09, clean rebuilds of the current `Flat::Document` sources passed
-the native and UBSan unit suites, capacity regressions, and both 2,304-seed
-corpus replays. The x86-64 build, unit suite, and full corpus replay also
-passed under Rosetta. All eight benchmark adapters completed; current timings
-are in the [main README](../README.md#benchmarks).
+On 2026-10-07, after amalgamating the sources into `FlatJson.hpp` and
+`FlatJson.cpp`, clean rebuilds passed the native, UBSan, and x86-64 (Rosetta)
+unit suites, capacity regressions, and 2,304-seed corpus replays. All eight
+benchmark adapters completed. The published timing snapshot is in the
+[main README](../README.md#benchmarks).
 
-All six linked FlatLib implementation files and the owned test executables
+macOS periodically deletes files under `$TMPDIR` and can leave the benchmark
+clones as empty directories, which makes `make benchmark` fail with
+`fatal: not a git repository`. Delete the dependency directory and rerun
+`make benchmark` to clone the pinned revisions again.
+
+The amalgamated `FlatJson.cpp` and the owned test executables
 also pass `-Wall -Wextra -Werror` with FlatLib's documented GNU-extension flags.
-All 13 README C++ snippets compile and link against those same implementation files.
+All 15 README C++ snippets compile and link against that same `FlatJson.cpp`.
 
 ## ASan startup deadlock
 

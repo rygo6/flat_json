@@ -30,12 +30,7 @@ mkdir -p "$buildDirectory"
 # shellcheck disable=SC2086
 $CXX $benchmarkFlags -I"$scriptDirectory" -I"$repositoryRoot" \
   "$scriptDirectory/benchmark_flat_json.cpp" \
-  "$repositoryRoot/Document.cpp" \
-  "$repositoryRoot/Container.cpp" \
-  "$repositoryRoot/File.cpp" \
-  "$repositoryRoot/Error.cpp" \
-  "$repositoryRoot/Terminal.cpp" \
-  "$repositoryRoot/Terminal_apple.cpp" \
+  "$repositoryRoot/FlatJson.cpp" \
   -o "$buildDirectory/flat_json"
 
 # shellcheck disable=SC2086

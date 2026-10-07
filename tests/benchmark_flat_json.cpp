@@ -1,5 +1,5 @@
 #include "benchmark.hpp"
-#include "../Document.hpp"
+#include "../FlatJson.hpp"
 
 using namespace Flat;
 using namespace Flat::Document;

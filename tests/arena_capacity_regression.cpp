@@ -3,7 +3,7 @@
 // arena_capacity_regression.cpp - Checks scratch separation and arena rollback.
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "Document.hpp"
+#include "FlatJson.hpp"
 
 using namespace Flat;
 using namespace Flat::Document;
